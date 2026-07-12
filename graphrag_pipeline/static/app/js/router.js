@@ -16,6 +16,7 @@ async function navigate() {
   $("#sidebar")?.classList.remove("open");
   const renderers = {
     dashboard: renderDashboard,
+    "knowledge-bases": renderKnowledgeBases,
     documents: renderDocuments,
     graph: renderGraphPage,
     chat: renderChat,

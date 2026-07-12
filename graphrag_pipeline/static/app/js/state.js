@@ -4,6 +4,7 @@ const AppState = {
     nodes: [],
     edges: [],
     loaded: false,
+    scope: "",
   },
   documents: [],
   activeJobs: {},
@@ -11,6 +12,7 @@ const AppState = {
   conversation: [],
   knowledgeBases: [],
   agents: [],
+  agentTools: [],
   health: null,
   stats: null,
 };

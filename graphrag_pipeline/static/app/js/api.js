@@ -81,17 +81,19 @@ const api = {
     if (params.kb_id) query.set("kb_id", params.kb_id);
     return apiRequest(`/kg/edges?${query}`);
   },
-  getNode(nodeId) {
-    return apiRequest(`/kg/nodes/${encodeURIComponent(nodeId)}`);
+  getNode(nodeId, kbId = "") {
+    return apiRequest(`/kg/nodes/${encodeURIComponent(nodeId)}${kbId ? `?kb_id=${encodeURIComponent(kbId)}` : ""}`);
   },
-  getNeighbors(nodeId, hops = 1) {
-    return apiRequest(`/kg/nodes/${encodeURIComponent(nodeId)}/neighbors?hops=${encodeURIComponent(hops)}`);
+  getNeighbors(nodeId, hops = 1, kbId = "") {
+    const query = new URLSearchParams({ hops });
+    if (kbId) query.set("kb_id", kbId);
+    return apiRequest(`/kg/nodes/${encodeURIComponent(nodeId)}/neighbors?${query}`);
   },
   getKgStats(kbId = "") {
     return apiRequest(`/kg/stats${kbId ? `?kb_id=${encodeURIComponent(kbId)}` : ""}`);
   },
-  exportKg() {
-    return apiRequest("/kg/export");
+  exportKg(kbId = "") {
+    return apiRequest(`/kg/export${kbId ? `?kb_id=${encodeURIComponent(kbId)}` : ""}`);
   },
   query(question, history = [], agentId = "auto", kbId = null) {
     return apiRequest("/query", { method: "POST", body: JSON.stringify({ question, history, agent_id: agentId, kb_id: kbId }) });
@@ -106,17 +108,19 @@ const api = {
     const query = new URLSearchParams({ page: params.page || 1, page_size: params.page_size || 20 });
     return apiRequest(`/query/history?${query}`);
   },
-  searchEntities(q, type = "") {
+  searchEntities(q, type = "", kbId = "") {
     const query = new URLSearchParams({ q });
     if (type && type !== "All") query.set("type", type);
+    if (kbId) query.set("kb_id", kbId);
     return apiRequest(`/search/entities?${query}`);
   },
   searchPath(fromId, toId, maxHops = 3) {
     const query = new URLSearchParams({ from: fromId, to: toId, max_hops: maxHops });
     return apiRequest(`/search/path?${query}`);
   },
-  searchGraph(q, includeNeighbors = true) {
+  searchGraph(q, includeNeighbors = true, kbId = "") {
     const query = new URLSearchParams({ q, include_neighbors: includeNeighbors });
+    if (kbId) query.set("kb_id", kbId);
     return apiRequest(`/search/graph?${query}`);
   },
   health() {
@@ -134,7 +138,34 @@ const api = {
   listKnowledgeBases() {
     return apiRequest("/knowledge-bases");
   },
+  getKnowledgeBase(kbId) {
+    return apiRequest(`/knowledge-bases/${encodeURIComponent(kbId)}`);
+  },
+  createKnowledgeBase(payload) {
+    return apiRequest("/knowledge-bases", { method: "POST", body: JSON.stringify(payload) });
+  },
+  updateKnowledgeBase(kbId, payload) {
+    return apiRequest(`/knowledge-bases/${encodeURIComponent(kbId)}`, { method: "PATCH", body: JSON.stringify(payload) });
+  },
+  deleteKnowledgeBase(kbId) {
+    return apiRequest(`/knowledge-bases/${encodeURIComponent(kbId)}`, { method: "DELETE" });
+  },
   listAgents() {
     return apiRequest("/agents");
+  },
+  getAgent(agentId) {
+    return apiRequest(`/agents/${encodeURIComponent(agentId)}`);
+  },
+  createAgent(payload) {
+    return apiRequest("/agents", { method: "POST", body: JSON.stringify(payload) });
+  },
+  updateAgent(agentId, payload) {
+    return apiRequest(`/agents/${encodeURIComponent(agentId)}`, { method: "PATCH", body: JSON.stringify(payload) });
+  },
+  deleteAgent(agentId) {
+    return apiRequest(`/agents/${encodeURIComponent(agentId)}`, { method: "DELETE" });
+  },
+  testRoute(question, agentId = "auto", kbId = null) {
+    return apiRequest("/routing/test", { method: "POST", body: JSON.stringify({ question, agent_id: agentId, kb_id: kbId }) });
   },
 };

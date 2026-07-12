@@ -26,9 +26,12 @@
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/knowledge-bases` | 获取知识库及文档、节点、关系统计 |
-| GET | `/agents` | 获取四个内置智能体、工具权限、绑定知识库及文档/节点/关系统计 |
+| POST/PATCH/DELETE | `/knowledge-bases[/{kb_id}]` | 创建、修改和删除空闲的自定义知识库；内置库与占用库受保护 |
+| GET | `/agents` | 获取内置/自定义智能体、可选工具、绑定知识库及数据统计 |
+| POST/PATCH/DELETE | `/agents[/{agent_id}]` | 创建、修改和删除自定义智能体；内置智能体可配置但不可删除 |
+| POST | `/routing/test` | 只执行 Supervisor 路由判断，不调用大模型或联网服务 |
 
-内置 `agent_medical`、`agent_technical`、`agent_web`、`agent_general`。`POST /query` 接受 `agent_id`（默认 `auto`）和可选 `kb_id`。手动模式严格使用智能体绑定的知识库；自动模式根据命中实体所属知识库、实时意图或通用回退进行路由。
+内置 `agent_medical`、`agent_technical`、`agent_web`、`agent_general`。每个智能体保存 `system_prompt`、`tools` 和 `allow_web_search`，配置直接参与执行权限判断和模型系统消息。`POST /query` 接受 `agent_id`（默认 `auto`）和可选 `kb_id`。手动模式严格使用智能体绑定的知识库；自动模式根据命中实体所属知识库、实时意图或通用回退进行路由。
 
 ## 索引任务
 
@@ -47,10 +50,10 @@
 |---|---|---|
 | GET | `/kg/nodes` | 节点列表 |
 | GET | `/kg/edges` | 边列表 |
-| GET | `/kg/nodes/{node_id}` | 节点详情 |
-| GET | `/kg/nodes/{node_id}/neighbors` | 节点邻居 |
+| GET | `/kg/nodes/{node_id}` | 节点详情；可用 `kb_id` 强制作用域 |
+| GET | `/kg/nodes/{node_id}/neighbors` | 节点邻居；可用 `kb_id` 强制作用域 |
 | GET | `/kg/stats` | 图谱统计 |
-| GET | `/kg/export` | 导出图谱 JSON |
+| GET | `/kg/export` | 导出全图或指定 `kb_id` 的独立图谱 JSON |
 
 ## QA 问答
 

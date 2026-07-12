@@ -346,6 +346,74 @@
   box-shadow: var(--shadow-lg);
 }
 
+.management-form {
+  display: grid;
+  gap: 14px;
+  width: min(720px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+}
+
+.management-form label {
+  display: grid;
+  gap: 6px;
+  color: var(--text-2);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.prompt-editor {
+  min-height: 130px;
+}
+
+.tool-fieldset {
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+}
+
+.tool-fieldset legend {
+  padding: 0 6px;
+  color: var(--text-2);
+}
+
+.tool-choice-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.tool-choice {
+  display: flex !important;
+  grid-template-columns: auto 1fr;
+  align-items: flex-start;
+  padding: 9px;
+  border: 1px solid var(--border-muted);
+  border-radius: var(--r-md);
+  background: var(--bg-s2);
+}
+
+.tool-choice > span {
+  display: grid;
+  gap: 3px;
+}
+
+.tool-choice.disabled {
+  opacity: 0.4;
+}
+
+.permission-toggle {
+  display: flex !important;
+  align-items: center;
+}
+
 .modal-actions {
   display: flex;
   justify-content: flex-end;
@@ -584,6 +652,35 @@
   margin-bottom: 16px;
 }
 
+.management-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.management-card {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 18px;
+  min-height: 220px;
+}
+
+.management-actions {
+  margin: 0;
+}
+
+.route-test-panel {
+  margin-bottom: 16px;
+}
+
+.route-test-form {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(180px, 280px) auto;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
 .agent-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -627,6 +724,14 @@
 
 .agent-card > .btn {
   margin-top: auto;
+}
+
+.prompt-preview p {
+  display: -webkit-box;
+  overflow: hidden;
+  margin: 6px 0 0;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
 }
 
 .tool-call summary {
@@ -729,6 +834,13 @@
   }
 
   .agent-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .management-grid,
+  .form-grid,
+  .tool-choice-grid,
+  .route-test-form {
     grid-template-columns: 1fr;
   }
 

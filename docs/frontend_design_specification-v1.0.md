@@ -5,10 +5,11 @@
 ## 页面
 
 - `#/dashboard`：系统总览、健康状态、最近文档、快捷入口。
+- `#/knowledge-bases`：知识库管理，支持创建、编辑、受保护删除和进入当前知识库的独立图谱。
 - `#/documents`：选择所属知识库、文件上传、行内校验、列表筛选、文档详情、索引任务管理和结果摘要。
 - `#/graph`：D3 知识图谱、筛选、详情、导出；≤500 节点使用 SVG，>500 节点自动切换 Canvas。
 - `#/chat`：支持 Supervisor 自动路由或手动选择四个内置智能体，展示知识库、路由原因、知识图谱 ReAct、实时联网检索、通用大模型、批量问答、Tool Calls、Cited Nodes 和网页来源。
-- `#/agents`：智能体中心，展示 Supervisor 与四个内置智能体的模式、联网权限、绑定知识库、工具和数据统计，并支持一键带入问答页。
+- `#/agents`：智能体管理，展示 Supervisor 与内置/自定义智能体，支持编辑系统提示词、运行模式、绑定知识库、工具和联网权限，并提供无模型调用的路由测试。
 - `#/search`：实体搜索、路径搜索、子图搜索；子图搜索自动居中高亮首个匹配实体，并支持点击匹配标签重新定位。
 - `#/system`：系统健康、支持格式、API 覆盖。
 
@@ -50,6 +51,6 @@
 - `state.js`：全局 `AppState` 和事件总线。
 - `ui.js`：Toast、Modal、格式化、粒子背景。
 - `graph.js`：D3 SVG/Canvas 自适应图谱渲染、节点高亮、拖动、缩放和导出。
-- `pages.js`：Dashboard、Documents、Graph、Chat、Agents、Search 和 System 页面渲染。
+- `pages.js`：Dashboard、Knowledge Bases、Documents、Graph、Chat、Agents、Search 和 System 页面渲染。
 - `router.js`：Hash 路由与全局搜索。
 - `main.js`：应用初始化。

@@ -77,6 +77,57 @@ test.describe.serial("GraphRAG Studio PRD browser acceptance", () => {
     await expect(page.locator("#chat-agent")).toHaveValue("agent_medical");
   });
 
+  test("knowledge base manager opens a strictly scoped independent graph", async ({ page }) => {
+    await page.goto("/#/knowledge-bases");
+    await expect(page.locator("[data-kb-card]")).toHaveCount(2);
+    await expect(page.locator('[data-kb-card="kb_medical"]')).toContainText("800 节点");
+    await page.locator('[data-kb-graph="kb_medical"]').click();
+    await expect(page).toHaveURL(/#\/graph\?kb_id=kb_medical/);
+    await expect(page.locator("#graph-kb-filter")).toHaveValue("kb_medical");
+    await expect(page.locator("#kg-canvas canvas.kg-canvas-renderer")).toBeVisible();
+    const scope = await page.evaluate(() => ({
+      kbId: AppState.kg.scope,
+      foreignNodes: AppState.kg.nodes.filter((node) => !["kb_medical", "__global__"].includes(node.kb_id)).length,
+      foreignEdges: AppState.kg.edges.filter((edge) => edge.kb_id !== "kb_medical").length,
+    }));
+    expect(scope).toEqual({ kbId: "kb_medical", foreignNodes: 0, foreignEdges: 0 });
+  });
+
+  test("agent manager edits prompts, tools and web permission and exposes route testing", async ({ page, request }) => {
+    const originalMedical = (await (await request.get("/api/v1/agents/agent_medical")).json()).data;
+    const originalWeb = (await (await request.get("/api/v1/agents/agent_web")).json()).data;
+    await page.goto("/#/agents");
+
+    await page.locator('[data-edit-agent="agent_medical"]').click();
+    const dialog = page.locator('[role="dialog"]');
+    await dialog.locator('textarea[name="system_prompt"]').fill("回答前必须说明知识库证据。");
+    await dialog.locator('input[name="tools"][value="search_path"]').uncheck();
+    await dialog.locator('button[type="submit"]').click();
+    await expect(page.locator('[data-agent-card="agent_medical"] .prompt-preview')).toContainText("回答前必须说明知识库证据");
+    await expect(page.locator('[data-agent-card="agent_medical"]')).not.toContainText("search_path");
+
+    await page.locator('[data-edit-agent="agent_web"]').click();
+    await page.locator('[role="dialog"] input[name="allow_web_search"]').uncheck();
+    await page.locator('[role="dialog"] button[type="submit"]').click();
+    await expect(page.locator('[data-agent-card="agent_web"]')).toContainText("禁止联网");
+
+    await page.locator("#route-test-question").fill("高血压有哪些症状？");
+    await page.locator("#run-route-test").click();
+    await expect(page.locator("#route-test-result")).toContainText("医疗知识智能体");
+    await expect(page.locator("#route-test-result")).toContainText("医疗知识库");
+
+    await request.patch("/api/v1/agents/agent_medical", { data: {
+      system_prompt: originalMedical.system_prompt,
+      tools: originalMedical.tools,
+      allow_web_search: originalMedical.allow_web_search,
+    } });
+    await request.patch("/api/v1/agents/agent_web", { data: {
+      system_prompt: originalWeb.system_prompt,
+      tools: originalWeb.tools,
+      allow_web_search: originalWeb.allow_web_search,
+    } });
+  });
+
   test("hybrid mode labels web answers and renders clickable sources", async ({ page }) => {
     await page.route("**/api/v1/query", async (route) => {
       await route.fulfill({
@@ -128,6 +179,7 @@ test.describe.serial("GraphRAG Studio PRD browser acceptance", () => {
 
   test("performance: 40 nodes and 780 edges initialize under 500ms", async ({ page }) => {
     await page.goto("/#/graph");
+    await expect(page.locator("#kg-canvas")).toBeVisible();
     const result = await page.evaluate(() => {
       activeGraph?.destroy?.();
       const nodes = Array.from({ length: 40 }, (_, index) => ({
@@ -158,6 +210,7 @@ test.describe.serial("GraphRAG Studio PRD browser acceptance", () => {
 
   test("performance: the Canvas threshold is exactly above 500 nodes", async ({ page }) => {
     await page.goto("/#/graph");
+    await expect(page.locator("#kg-canvas")).toBeVisible();
     const renderer = await page.evaluate(() => {
       activeGraph?.destroy?.();
       const nodes = Array.from({ length: 501 }, (_, index) => ({

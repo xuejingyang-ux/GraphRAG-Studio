@@ -140,7 +140,11 @@ class PRDAcceptanceTests(unittest.TestCase):
 
     def test_f12_all_previously_unused_api_wrappers_have_ui_flows(self) -> None:
         pages = (self.static_dir / "js" / "pages.js").read_text(encoding="utf-8")
-        for call in ("api.getDocument(", "api.getIndexResult(", "api.getKgStats(", "api.queryBatch(", "api.getBatch("):
+        for call in (
+            "api.getDocument(", "api.getIndexResult(", "api.getKgStats(", "api.queryBatch(", "api.getBatch(",
+            "api.getKnowledgeBase(", "api.createKnowledgeBase(", "api.updateKnowledgeBase(", "api.deleteKnowledgeBase(",
+            "api.getAgent(", "api.createAgent(", "api.updateAgent(", "api.deleteAgent(", "api.testRoute(",
+        ):
             with self.subTest(call=call):
                 self.assertIn(call, pages)
 

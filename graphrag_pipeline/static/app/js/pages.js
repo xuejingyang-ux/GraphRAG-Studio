@@ -20,8 +20,8 @@ async function refreshShellStats() {
   }
 }
 
-async function loadDocuments(pageSize = 50) {
-  const payload = await api.listDocuments({ page_size: pageSize });
+async function loadDocuments(pageSize = 50, kbId = "") {
+  const payload = await api.listDocuments({ page_size: pageSize, kb_id: kbId });
   AppState.documents = payload.items;
   return payload;
 }
@@ -30,6 +30,7 @@ async function loadAgentCatalog() {
   const [knowledgeBases, agents] = await Promise.all([api.listKnowledgeBases(), api.listAgents()]);
   AppState.knowledgeBases = knowledgeBases.items;
   AppState.agents = agents.items;
+  AppState.agentTools = agents.available_tools || [];
   return { knowledgeBases: AppState.knowledgeBases, agents: AppState.agents };
 }
 
@@ -37,15 +38,16 @@ function knowledgeBaseName(kbId) {
   return AppState.knowledgeBases.find((item) => item.kb_id === kbId)?.name || kbId || "未分类";
 }
 
-async function loadKg(force = false) {
-  if (AppState.kg.loaded && !force) return AppState.kg;
+async function loadKg(force = false, kbId = "") {
+  if (AppState.kg.loaded && AppState.kg.scope === kbId && !force) return AppState.kg;
   const [nodesPayload, edgesPayload] = await Promise.allSettled([
-    api.listNodes({ page_size: 5000 }),
-    api.listEdges({ page_size: 20000 }),
+    api.listNodes({ page_size: 5000, kb_id: kbId }),
+    api.listEdges({ page_size: 20000, kb_id: kbId }),
   ]);
   AppState.kg.nodes = nodesPayload.status === "fulfilled" ? nodesPayload.value.items : [];
   AppState.kg.edges = edgesPayload.status === "fulfilled" ? edgesPayload.value.items : [];
   AppState.kg.loaded = true;
+  AppState.kg.scope = kbId;
   return AppState.kg;
 }
 
@@ -181,7 +183,7 @@ function renderDocsTable(docs, compact = false) {
               ${compact ? "" : `<td><div class="toolbar">
                 ${doc.status === "uploaded" || doc.status === "failed" ? `<button class="btn btn-sm btn-primary" data-action="index" data-doc="${doc.doc_id}">▶ 开始索引</button>` : ""}
                 ${doc.status === "indexing" ? `<button class="btn btn-sm btn-secondary" data-action="cancel-doc" data-doc="${doc.doc_id}" data-job="${doc.job_id || ""}">✕ 取消任务</button>` : ""}
-                ${doc.status === "indexed" ? `<a class="btn btn-sm btn-secondary" href="#/graph?doc_id=${encodeURIComponent(doc.doc_id)}">◉ 查看图谱</a>` : ""}
+                ${doc.status === "indexed" ? `<a class="btn btn-sm btn-secondary" href="#/graph?kb_id=${encodeURIComponent(doc.kb_id || "")}&doc_id=${encodeURIComponent(doc.doc_id)}">◉ 查看图谱</a>` : ""}
                 <button class="btn btn-sm btn-secondary" data-action="details" data-doc="${doc.doc_id}">详情</button>
                 <button class="btn btn-sm btn-danger" data-action="delete" data-doc="${doc.doc_id}">删除</button>
               </div></td>`}
@@ -199,6 +201,78 @@ function validateFile(file) {
   if (!allowed.includes(ext)) return `不支持的文件格式：${ext}`;
   if (file.size > 200 * 1024 * 1024) return "文件超过 200MB 限制";
   return "";
+}
+
+async function renderKnowledgeBases() {
+  main().className = "main";
+  await loadAgentCatalog();
+  main().innerHTML = pageHead(
+    "知识库管理",
+    "创建和维护知识库，并查看每个知识库完全独立的图谱视图。",
+    '<button class="btn btn-primary" id="create-kb">＋ 新建知识库</button>',
+  ) + `
+    <section class="management-grid" id="kb-management-grid">
+      ${AppState.knowledgeBases.map((kb) => `
+        <article class="card management-card glow" data-kb-card="${escapeHtml(kb.kb_id)}">
+          <div><span class="eyebrow">${escapeHtml(kb.domain || "general")}</span><h2>${escapeHtml(kb.name)}</h2><p>${escapeHtml(kb.description || "暂无描述")}</p></div>
+          <div class="agent-stats"><span>${Number(kb.documents || 0)} 文档</span><span>${Number(kb.nodes || 0)} 节点</span><span>${Number(kb.edges || 0)} 关系</span></div>
+          <div class="toolbar management-actions">
+            <a class="btn btn-primary" data-kb-graph="${escapeHtml(kb.kb_id)}" href="#/graph?kb_id=${encodeURIComponent(kb.kb_id)}">◉ 独立图谱</a>
+            <button class="btn btn-secondary" data-edit-kb="${escapeHtml(kb.kb_id)}">编辑</button>
+            ${kb.built_in ? '<span class="badge">内置</span>' : `<button class="btn btn-danger" data-delete-kb="${escapeHtml(kb.kb_id)}">删除</button>`}
+          </div>
+        </article>
+      `).join("")}
+    </section>
+  `;
+  $("#create-kb").addEventListener("click", () => showKnowledgeBaseEditor());
+  $$('[data-edit-kb]').forEach((button) => button.addEventListener("click", async () => {
+    try {
+      showKnowledgeBaseEditor(await api.getKnowledgeBase(button.dataset.editKb));
+    } catch (error) {
+      showError(error, "加载知识库配置失败");
+    }
+  }));
+  $$('[data-delete-kb]').forEach((button) => button.addEventListener("click", async () => {
+    const kb = AppState.knowledgeBases.find((item) => item.kb_id === button.dataset.deleteKb);
+    if (!await confirmModal("删除知识库？", `${kb?.name || button.dataset.deleteKb} 只有在没有文档和绑定智能体时才能删除。`, "删除", true)) return;
+    try {
+      await api.deleteKnowledgeBase(button.dataset.deleteKb);
+      toast("知识库已删除", "success");
+      await renderKnowledgeBases();
+    } catch (error) {
+      showError(error, "删除知识库失败");
+    }
+  }));
+}
+
+function showKnowledgeBaseEditor(kb = null) {
+  const root = $("#modal-root");
+  root.innerHTML = `
+    <div class="modal-overlay" role="dialog" aria-modal="true" aria-label="${kb ? "编辑" : "新建"}知识库">
+      <form class="modal management-form" id="kb-editor">
+        <h2>${kb ? "编辑知识库" : "新建知识库"}</h2>
+        ${kb ? `<p class="small">ID：${escapeHtml(kb.kb_id)}</p>` : '<label>知识库 ID（可留空自动生成）<input class="input" name="kb_id" placeholder="kb_example" /></label>'}
+        <label>名称<input class="input" name="name" required maxlength="80" value="${escapeHtml(kb?.name || "")}" /></label>
+        <label>领域<input class="input" name="domain" maxlength="60" value="${escapeHtml(kb?.domain || "general")}" /></label>
+        <label>描述<textarea class="textarea" name="description" maxlength="500">${escapeHtml(kb?.description || "")}</textarea></label>
+        <div class="modal-actions"><button class="btn btn-secondary" type="button" data-close-editor>取消</button><button class="btn btn-primary" type="submit">保存</button></div>
+      </form>
+    </div>`;
+  root.querySelector("[data-close-editor]").addEventListener("click", () => (root.innerHTML = ""));
+  root.querySelector("#kb-editor").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const values = Object.fromEntries(new FormData(event.currentTarget));
+    try {
+      if (kb) await api.updateKnowledgeBase(kb.kb_id, values);
+      else await api.createKnowledgeBase(values);
+      root.innerHTML = "";
+      toast(kb ? "知识库配置已更新" : "知识库已创建", "success");
+      await renderKnowledgeBases();
+    } catch (error) {
+      showError(error, "保存知识库失败");
+    }
+  });
 }
 
 async function renderDocuments() {
@@ -369,10 +443,17 @@ async function showDocumentDetails(docId) {
 
 async function renderGraphPage(params = {}) {
   main().className = "main graph-page";
+  const selectedKbId = params.kb_id || "";
+  try {
+    await loadAgentCatalog();
+  } catch (error) {
+    AppState.knowledgeBases = [];
+  }
   main().innerHTML = `
     <section class="graph-layout">
       <aside class="filter-panel">
         <div class="panel-section"><span class="eyebrow">KG Explorer</span><h2>筛选</h2></div>
+        <div class="panel-section"><h3>知识库</h3><select class="select" id="graph-kb-filter"><option value="">全部知识库</option>${AppState.knowledgeBases.map((kb) => `<option value="${kb.kb_id}" ${kb.kb_id === selectedKbId ? "selected" : ""}>${escapeHtml(kb.name)}</option>`).join("")}</select></div>
         <div class="panel-section"><h3>来源文档</h3><select class="select" id="graph-doc-filter"><option value="">全部文档</option></select></div>
         <div class="panel-section"><h3>实体类型</h3><div class="check-list" id="type-filters"></div></div>
         <div class="panel-section"><h3>置信度</h3><div class="check-list" id="confidence-filters"></div></div>
@@ -393,7 +474,7 @@ async function renderGraphPage(params = {}) {
   `;
   renderLegend("#graph-legend");
   try {
-    const [, , kgStats] = await Promise.all([loadDocuments(), loadKg(true), api.getKgStats()]);
+    const [, , kgStats] = await Promise.all([loadDocuments(50, selectedKbId), loadKg(true, selectedKbId), api.getKgStats(selectedKbId)]);
     $("#graph-runtime").textContent = `${kgStats.nodes} nodes · ${kgStats.edges} edges`;
     const docSelect = $("#graph-doc-filter");
     docSelect.innerHTML += AppState.documents.map((doc) => `<option value="${doc.doc_id}">${escapeHtml(doc.filename)}</option>`).join("");
@@ -401,16 +482,19 @@ async function renderGraphPage(params = {}) {
     const typeCounts = AppState.kg.nodes.reduce((acc, node) => ({ ...acc, [node.type]: (acc[node.type] || 0) + 1 }), {});
     $("#type-filters").innerHTML = Object.entries(TypeColors).map(([type]) => `<label><input type="checkbox" value="${type}" checked /> ${type} <span class="small">(${typeCounts[type] || 0})</span></label>`).join("");
     $("#confidence-filters").innerHTML = ["exact", "greater", "lesser", "fuzzy"].map((value) => `<label><input type="checkbox" value="${value}" checked /> ${value}</label>`).join("");
-    const redraw = () => drawFilteredGraph(params.node);
+    const redraw = () => drawFilteredGraph(params.node, selectedKbId);
+    $("#graph-kb-filter").addEventListener("change", (event) => {
+      location.hash = event.target.value ? `#/graph?kb_id=${encodeURIComponent(event.target.value)}` : "#/graph";
+    });
     docSelect.addEventListener("change", redraw);
     $$("#type-filters input, #confidence-filters input").forEach((input) => input.addEventListener("change", redraw));
     $("#graph-search").addEventListener("keydown", async (event) => {
       if (event.key === "Enter") {
-        const results = await api.searchEntities(event.target.value);
+        const results = await api.searchEntities(event.target.value, "", selectedKbId);
         const first = results.items[0];
         if (first) {
           activeGraph?.focusNode(first.node_id);
-          showNodeDetail(first.node_id);
+          showNodeDetail(first.node_id, selectedKbId);
         } else {
           toast("No entity found", "warning");
         }
@@ -420,8 +504,8 @@ async function renderGraphPage(params = {}) {
     $("#zoom-out").addEventListener("click", () => activeGraph?.zoomOut());
     $("#fit-graph").addEventListener("click", () => activeGraph?.fit());
     $("#export-png").addEventListener("click", () => exportGraphAsPng(activeGraph));
-    $("#export-json").addEventListener("click", async () => downloadJson("knowledge-graph.json", await api.exportKg()));
-    drawFilteredGraph(params.node);
+    $("#export-json").addEventListener("click", async () => downloadJson(selectedKbId ? `${selectedKbId}-graph.json` : "knowledge-graph.json", await api.exportKg(selectedKbId)));
+    drawFilteredGraph(params.node, selectedKbId);
   } catch (error) {
     $("#kg-canvas").innerHTML = emptyState("KG 为空", "可以先加载 Demo 或上传并索引文档。", '<button class="btn btn-primary" id="empty-demo">加载示例</button>');
     $("#empty-demo")?.addEventListener("click", async () => {
@@ -432,7 +516,7 @@ async function renderGraphPage(params = {}) {
   }
 }
 
-function drawFilteredGraph(focusNodeId = "") {
+function drawFilteredGraph(focusNodeId = "", kbId = "") {
   const docId = $("#graph-doc-filter")?.value || "";
   const selectedKbId = AppState.documents.find((item) => item.doc_id === docId)?.kb_id || "";
   const types = new Set($$("#type-filters input:checked").map((input) => input.value));
@@ -445,7 +529,7 @@ function drawFilteredGraph(focusNodeId = "") {
   const edges = AppState.kg.edges.filter((edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target));
   activeGraph?.destroy?.();
   activeGraph = renderGraph("#kg-canvas", nodes, edges, {
-    onNodeClick: (node) => showNodeDetail(node.node_id),
+    onNodeClick: (node) => showNodeDetail(node.node_id, kbId),
     onBlankClick: () => ($("#detail-panel").innerHTML = `<div class="panel-section">${emptyState("选择节点", "点击图谱节点查看详情、邻居和智能问答。")}</div>`),
   });
   if ($("#graph-runtime") && activeGraph) {
@@ -455,14 +539,14 @@ function drawFilteredGraph(focusNodeId = "") {
   if (focusNodeId) {
     setTimeout(() => {
       activeGraph?.focusNode(focusNodeId);
-      showNodeDetail(focusNodeId);
+      showNodeDetail(focusNodeId, kbId);
     }, 700);
   }
 }
 
-async function showNodeDetail(nodeId) {
+async function showNodeDetail(nodeId, kbId = "") {
   try {
-    const [node, neighbors] = await Promise.all([api.getNode(nodeId), api.getNeighbors(nodeId, 1)]);
+    const [node, neighbors] = await Promise.all([api.getNode(nodeId, kbId), api.getNeighbors(nodeId, 1, kbId)]);
     $("#detail-panel").innerHTML = `
       <div class="panel-section"><h1>${escapeHtml(node.name)}</h1>${typeBadge(node.type)} <span class="badge">${escapeHtml(node.confidence)}</span></div>
       <div class="panel-section"><h3>Attributes</h3><p class="small">Page ${node.page} · degree ${node.degree} · doc ${escapeHtml(node.doc_id)}</p><p>${escapeHtml(node.description || "")}</p></div>
@@ -471,7 +555,7 @@ async function showNodeDetail(nodeId) {
     `;
     $$("[data-neighbor]").forEach((button) => button.addEventListener("click", () => {
       activeGraph?.focusNode(button.dataset.neighbor);
-      showNodeDetail(button.dataset.neighbor);
+      showNodeDetail(button.dataset.neighbor, kbId);
     }));
   } catch (error) {
     showError(error, "节点详情加载失败");
@@ -486,7 +570,7 @@ async function renderChat(params = {}) {
   } catch (error) {
     AppState.agents = [];
   }
-  main().innerHTML = pageHead("智能问答", "混合问答：知识图谱走 ReAct，实时问题联网检索，其他问题由通用大模型回答。", '<a class="btn btn-secondary" href="#/agents">✦ 智能体中心</a>') + `
+  main().innerHTML = pageHead("智能问答", "混合问答：知识图谱走 ReAct，实时问题联网检索，其他问题由通用大模型回答。", '<a class="btn btn-secondary" href="#/agents">✦ 智能体管理</a>') + `
     <section class="chat-layout">
       <aside class="card chat-history"><h2>历史记录</h2><div id="history-list"></div></aside>
       <section class="chat-area">
@@ -641,15 +725,20 @@ async function renderAgents() {
   try {
     await loadAgentCatalog();
   } catch (error) {
-    main().innerHTML = pageHead("智能体中心", "查看并选择知识库智能体。") + emptyState("智能体加载失败", "请检查后端 API 状态后重试。");
+    main().innerHTML = pageHead("智能体管理", "查看并配置知识库智能体。") + emptyState("智能体加载失败", "请检查后端 API 状态后重试。");
     return;
   }
   const modeLabels = { knowledge_graph: "知识图谱 ReAct", web_search: "实时联网检索", general_llm: "通用大模型" };
   const icons = { agent_medical: "⚕", agent_technical: "◇", agent_web: "◎", agent_general: "✦" };
-  main().innerHTML = pageHead("智能体中心", "查看四个内置智能体的知识范围、工具权限和运行模式。", '<a class="btn btn-primary" href="#/chat?agent=auto">Supervisor 自动选择</a>') + `
+  main().innerHTML = pageHead("智能体管理", "修改系统提示词、工具、知识库绑定和联网权限。", '<button class="btn btn-primary" id="create-agent">＋ 新建智能体</button><a class="btn btn-secondary" href="#/chat?agent=auto">Supervisor 自动选择</a>') + `
     <section class="card supervisor-card glow">
       <div><span class="eyebrow">SUPERVISOR</span><h2>自动路由智能体</h2><p class="small">先匹配知识库实体，再判断实时意图；没有命中时使用通用智能体。</p></div>
       <a class="btn btn-primary" href="#/chat?agent=auto">使用自动路由</a>
+    </section>
+    <section class="card glow route-test-panel">
+      <div><span class="eyebrow">ROUTING TEST</span><h2>路由测试</h2></div>
+      <div class="route-test-form"><input class="input" id="route-test-question" value="高血压有哪些症状？" placeholder="输入测试问题" /><select class="select" id="route-test-kb"><option value="">不限定知识库</option>${AppState.knowledgeBases.map((kb) => `<option value="${kb.kb_id}">${escapeHtml(kb.name)}</option>`).join("")}</select><button class="btn btn-secondary" id="run-route-test">测试路由</button></div>
+      <div id="route-test-result" class="small">仅执行路由判断，不调用大模型或联网接口。</div>
     </section>
     <section class="agent-grid">
       ${AppState.agents.map((agent) => `
@@ -659,12 +748,101 @@ async function renderAgents() {
           <div class="tag-row"><span class="badge">${escapeHtml(modeLabels[agent.mode] || agent.mode)}</span><span class="badge">${agent.allow_web_search ? "允许联网" : "禁止联网"}</span></div>
           <div class="agent-scope"><strong>绑定知识库</strong><p>${escapeHtml(agent.kb_name || "不绑定知识库")}</p></div>
           <div class="agent-tools"><strong>可用工具</strong><div class="tag-row">${(agent.tools || []).map((tool) => `<span class="badge">${escapeHtml(tool)}</span>`).join("")}</div></div>
+          <div class="prompt-preview"><strong>系统提示词</strong><p class="small">${escapeHtml(agent.system_prompt || "未配置")}</p></div>
           <div class="agent-stats"><span>${Number(agent.documents || 0)} 文档</span><span>${Number(agent.nodes || 0)} 节点</span><span>${Number(agent.edges || 0)} 关系</span></div>
-          <a class="btn btn-primary" data-use-agent="${agent.agent_id}" href="#/chat?agent=${encodeURIComponent(agent.agent_id)}">选择该智能体</a>
+          <div class="toolbar management-actions"><a class="btn btn-primary" data-use-agent="${agent.agent_id}" href="#/chat?agent=${encodeURIComponent(agent.agent_id)}">选择该智能体</a><button class="btn btn-secondary" data-edit-agent="${agent.agent_id}">配置</button>${agent.built_in ? '<span class="badge">内置</span>' : `<button class="btn btn-danger" data-delete-agent="${agent.agent_id}">删除</button>`}</div>
         </article>
       `).join("")}
     </section>
   `;
+  $("#create-agent").addEventListener("click", () => showAgentEditor());
+  $$('[data-edit-agent]').forEach((button) => button.addEventListener("click", async () => {
+    try {
+      showAgentEditor(await api.getAgent(button.dataset.editAgent));
+    } catch (error) {
+      showError(error, "加载智能体配置失败");
+    }
+  }));
+  $$('[data-delete-agent]').forEach((button) => button.addEventListener("click", async () => {
+    const agent = AppState.agents.find((item) => item.agent_id === button.dataset.deleteAgent);
+    if (!await confirmModal("删除智能体？", `确定删除 ${agent?.name || button.dataset.deleteAgent}？`, "删除", true)) return;
+    try {
+      await api.deleteAgent(button.dataset.deleteAgent);
+      toast("智能体已删除", "success");
+      await renderAgents();
+    } catch (error) {
+      showError(error, "删除智能体失败");
+    }
+  }));
+  $("#run-route-test").addEventListener("click", async () => {
+    const resultRoot = $("#route-test-result");
+    resultRoot.textContent = "正在判断路由…";
+    try {
+      const result = await api.testRoute($("#route-test-question").value, "auto", $("#route-test-kb").value || null);
+      resultRoot.innerHTML = `<span class="badge">${escapeHtml(result.agent_name)}</span> ${result.kb_name ? `<span class="badge">${escapeHtml(result.kb_name)}</span>` : ""}<span class="badge">${escapeHtml(modeLabels[result.mode] || result.mode)}</span><p class="small">${escapeHtml(result.route_reason)}</p>`;
+    } catch (error) {
+      showError(error, "路由测试失败");
+      resultRoot.textContent = error.message;
+    }
+  });
+}
+
+function showAgentEditor(agent = null) {
+  const root = $("#modal-root");
+  const initialMode = agent?.mode || "knowledge_graph";
+  root.innerHTML = `
+    <div class="modal-overlay" role="dialog" aria-modal="true" aria-label="${agent ? "配置" : "新建"}智能体">
+      <form class="modal management-form agent-editor-modal" id="agent-editor">
+        <h2>${agent ? "配置智能体" : "新建智能体"}</h2>
+        ${agent ? `<p class="small">ID：${escapeHtml(agent.agent_id)}</p>` : '<label>智能体 ID（可留空自动生成）<input class="input" name="agent_id" placeholder="agent_example" /></label>'}
+        <div class="form-grid"><label>名称<input class="input" name="name" required maxlength="80" value="${escapeHtml(agent?.name || "")}" /></label><label>运行模式<select class="select" name="mode" id="agent-mode"><option value="knowledge_graph" ${initialMode === "knowledge_graph" ? "selected" : ""}>知识图谱 ReAct</option><option value="web_search" ${initialMode === "web_search" ? "selected" : ""}>实时联网检索</option><option value="general_llm" ${initialMode === "general_llm" ? "selected" : ""}>通用大模型</option></select></label></div>
+        <label>绑定知识库<select class="select" name="kb_id" id="agent-kb"><option value="">不绑定知识库</option>${AppState.knowledgeBases.map((kb) => `<option value="${kb.kb_id}" ${agent?.kb_id === kb.kb_id ? "selected" : ""}>${escapeHtml(kb.name)}</option>`).join("")}</select></label>
+        <label>描述<textarea class="textarea" name="description" maxlength="500">${escapeHtml(agent?.description || "")}</textarea></label>
+        <label>系统提示词<textarea class="textarea prompt-editor" name="system_prompt" maxlength="6000" placeholder="定义智能体身份、回答边界和输出要求">${escapeHtml(agent?.system_prompt || "")}</textarea></label>
+        <fieldset class="tool-fieldset"><legend>工具权限</legend><div class="tool-choice-grid">${AppState.agentTools.map((tool) => {
+          const checked = agent ? (agent.tools || []).includes(tool.tool_id) : (tool.modes || []).includes(initialMode);
+          return `<label class="tool-choice" data-tool-modes="${escapeHtml((tool.modes || []).join(","))}"><input type="checkbox" name="tools" value="${escapeHtml(tool.tool_id)}" ${checked ? "checked" : ""} /><span><strong>${escapeHtml(tool.name)}</strong><span class="small">${escapeHtml(tool.description)}</span></span></label>`;
+        }).join("")}</div></fieldset>
+        <label class="permission-toggle"><input type="checkbox" name="allow_web_search" ${agent?.allow_web_search ? "checked" : ""} /> 允许访问互联网</label>
+        <div class="modal-actions"><button class="btn btn-secondary" type="button" data-close-editor>取消</button><button class="btn btn-primary" type="submit">保存配置</button></div>
+      </form>
+    </div>`;
+  const modeSelect = root.querySelector("#agent-mode");
+  const syncTools = (reset = false) => {
+    root.querySelectorAll("[data-tool-modes]").forEach((choice) => {
+      const allowed = choice.dataset.toolModes.split(",").includes(modeSelect.value);
+      const checkbox = choice.querySelector("input");
+      checkbox.disabled = !allowed;
+      choice.classList.toggle("disabled", !allowed);
+      if (reset) checkbox.checked = allowed;
+    });
+  };
+  syncTools(false);
+  modeSelect.addEventListener("change", () => syncTools(true));
+  root.querySelector("[data-close-editor]").addEventListener("click", () => (root.innerHTML = ""));
+  root.querySelector("#agent-editor").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    const payload = {
+      agent_id: data.get("agent_id") || undefined,
+      name: data.get("name"),
+      description: data.get("description"),
+      mode: data.get("mode"),
+      kb_id: data.get("kb_id") || null,
+      system_prompt: data.get("system_prompt"),
+      tools: data.getAll("tools"),
+      allow_web_search: data.get("allow_web_search") === "on",
+    };
+    try {
+      if (agent) await api.updateAgent(agent.agent_id, payload);
+      else await api.createAgent(payload);
+      root.innerHTML = "";
+      toast(agent ? "智能体配置已更新" : "智能体已创建", "success");
+      await renderAgents();
+    } catch (error) {
+      showError(error, "保存智能体失败");
+    }
+  });
 }
 
 async function renderSearch(params = {}) {
