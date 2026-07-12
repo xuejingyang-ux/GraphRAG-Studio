@@ -151,6 +151,8 @@ class MedicalQuestionAnsweringTests(unittest.TestCase):
     def test_hybrid_router_prefers_knowledge_graph_when_entity_exists(self) -> None:
         result = api_server.answer_question("高血压有哪些症状？")
         self.assertEqual(result["answer_mode"], "knowledge_graph")
+        self.assertEqual(result["agent_id"], "agent_medical")
+        self.assertEqual(result["kb_id"], "kb_medical")
         self.assertTrue(result["cited_nodes"])
 
     def test_hybrid_router_uses_web_search_for_realtime_question(self) -> None:
@@ -165,6 +167,7 @@ class MedicalQuestionAnsweringTests(unittest.TestCase):
         self.assertEqual(result["agent"], "web-search+llm")
         self.assertEqual(result["sources"], sources)
         self.assertEqual(result["tool_calls"][0]["tool"], "web_search")
+        self.assertEqual(result["agent_id"], "agent_web")
 
     def test_hybrid_router_uses_general_model_for_non_graph_question(self) -> None:
         api_server.SILICONFLOW_API_KEY = "test-key"
@@ -173,6 +176,30 @@ class MedicalQuestionAnsweringTests(unittest.TestCase):
         self.assertEqual(result["answer_mode"], "general_llm")
         self.assertEqual(result["agent"], "general-llm")
         self.assertEqual(result["answer"], "这是通用模型答案。")
+        self.assertEqual(result["agent_id"], "agent_general")
+
+    def test_auto_router_selects_technical_agent(self) -> None:
+        result = api_server.answer_question("GraphRAG 使用了哪些核心技术？")
+        self.assertEqual(result["agent_id"], "agent_technical")
+        self.assertEqual(result["kb_id"], "kb_technical")
+        self.assertIn("自动路由", result["route_reason"])
+
+    def test_manual_agent_selection_enforces_knowledge_base_scope(self) -> None:
+        result = api_server.answer_question("高血压有哪些症状？", agent_id="agent_technical")
+        self.assertEqual(result["agent_id"], "agent_technical")
+        self.assertEqual(result["kb_id"], "kb_technical")
+        self.assertFalse(result["cited_nodes"])
+        self.assertIn("没有找到足够相关的实体", result["answer"])
+
+    def test_knowledge_base_search_does_not_leak_entities(self) -> None:
+        self.assertFalse(api_server.find_entities_in_question("高血压", kb_id="kb_technical"))
+        self.assertFalse(api_server.find_entities_in_question("GraphRAG", kb_id="kb_medical"))
+
+    def test_every_document_node_and_edge_has_kb_id(self) -> None:
+        db = api_server.load_db()
+        self.assertTrue(all(item.get("kb_id") for item in db["documents"]))
+        self.assertTrue(all(item.get("kb_id") for item in db["nodes"]))
+        self.assertTrue(all(item.get("kb_id") for item in db["edges"]))
 
 
 if __name__ == "__main__":

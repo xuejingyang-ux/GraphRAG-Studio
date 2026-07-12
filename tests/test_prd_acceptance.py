@@ -36,6 +36,23 @@ class PRDAcceptanceTests(unittest.TestCase):
         self.assertIn('class="upload-result error"', pages)
         self.assertIn("200 * 1024 * 1024", pages)
 
+    def test_upload_assigns_selected_knowledge_base(self) -> None:
+        response = self.client.post(
+            "/api/v1/documents/upload",
+            data={"kb_id": "kb_medical"},
+            files={"file": ("medical.html", b"<p>medical</p>", "text/html")},
+        )
+        self.assertEqual(response.json()["data"]["kb_id"], "kb_medical")
+
+    def test_builtin_knowledge_bases_and_agents_are_available(self) -> None:
+        knowledge_bases = self.client.get("/api/v1/knowledge-bases").json()["data"]
+        agents = self.client.get("/api/v1/agents").json()["data"]
+        self.assertEqual({item["kb_id"] for item in knowledge_bases["items"]}, {"kb_medical", "kb_technical"})
+        self.assertEqual(
+            {item["agent_id"] for item in agents["items"]},
+            {"agent_medical", "agent_technical", "agent_web", "agent_general"},
+        )
+
     def test_f02_index_progress_and_result(self) -> None:
         upload = self.client.post(
             "/api/v1/documents/upload",

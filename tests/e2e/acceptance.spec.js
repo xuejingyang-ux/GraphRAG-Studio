@@ -8,6 +8,8 @@ test.describe.serial("GraphRAG Studio PRD browser acceptance", () => {
 
   test("F01 shows invalid uploads inline", async ({ page }) => {
     await page.goto("/#/documents");
+    await expect(page.locator("#upload-kb option")).toHaveCount(2);
+    await expect(page.locator("#upload-kb")).toContainText("医疗知识库");
     await page.locator("#file-input").setInputFiles({ name: "invalid.exe", mimeType: "application/octet-stream", buffer: Buffer.from("bad") });
     await expect(page.locator(".upload-result.error")).toContainText("不支持的文件格式");
   });
@@ -40,6 +42,8 @@ test.describe.serial("GraphRAG Studio PRD browser acceptance", () => {
       page.locator("#send-chat").click(),
     ]);
     await expect(page.locator(".message.ai").last()).toContainText("2型糖尿病");
+    await expect(page.locator(".message.ai").last()).toContainText("智能体：医疗知识智能体");
+    await expect(page.locator(".message.ai").last()).toContainText("知识库：医疗知识库");
     await page.locator("#chat-input").fill("它常用什么药，应去什么科室？");
     await Promise.all([
       page.waitForResponse((response) => response.url().endsWith("/api/v1/query") && response.request().method() === "POST"),
@@ -47,6 +51,18 @@ test.describe.serial("GraphRAG Studio PRD browser acceptance", () => {
     ]);
     await expect(page.locator(".message.ai").last()).toContainText("二甲双胍");
     expect(queryBodies[1].history).toHaveLength(2);
+  });
+
+  test("manual agent selection keeps queries inside its bound knowledge base", async ({ page }) => {
+    await page.goto("/#/chat");
+    await expect(page.locator("#chat-agent option")).toHaveCount(5);
+    await page.locator("#chat-agent").selectOption("agent_technical");
+    await page.locator("#chat-input").fill("高血压有哪些症状？");
+    await page.locator("#send-chat").click();
+    const answer = page.locator(".message.ai").last();
+    await expect(answer).toContainText("没有找到足够相关的实体");
+    await expect(answer).toContainText("智能体：GraphRAG 技术智能体");
+    await expect(answer).toContainText("用户手动选择");
   });
 
   test("hybrid mode labels web answers and renders clickable sources", async ({ page }) => {

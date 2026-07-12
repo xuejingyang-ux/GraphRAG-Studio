@@ -5,9 +5,9 @@
 ## 页面
 
 - `#/dashboard`：系统总览、健康状态、最近文档、快捷入口。
-- `#/documents`：文件上传、行内校验、列表筛选、文档详情、索引任务管理和结果摘要。
+- `#/documents`：选择所属知识库、文件上传、行内校验、列表筛选、文档详情、索引任务管理和结果摘要。
 - `#/graph`：D3 知识图谱、筛选、详情、导出；≤500 节点使用 SVG，>500 节点自动切换 Canvas。
-- `#/chat`：混合多轮问答；支持知识图谱 ReAct、实时联网检索、通用大模型、批量问答、Tool Calls、Cited Nodes 和网页来源。
+- `#/chat`：支持 Supervisor 自动路由或手动选择四个内置智能体，展示知识库、路由原因、知识图谱 ReAct、实时联网检索、通用大模型、批量问答、Tool Calls、Cited Nodes 和网页来源。
 - `#/search`：实体搜索、路径搜索、子图搜索；子图搜索自动居中高亮首个匹配实体，并支持点击匹配标签重新定位。
 - `#/system`：系统健康、支持格式、API 覆盖。
 
@@ -45,7 +45,7 @@
 
 ## JS 模块
 
-- `api.js`：25 个 API 调用和 `APIError`。
+- `api.js`：27 个 API 调用和 `APIError`。
 - `state.js`：全局 `AppState` 和事件总线。
 - `ui.js`：Toast、Modal、格式化、粒子背景。
 - `graph.js`：D3 SVG/Canvas 自适应图谱渲染、节点高亮、拖动、缩放和导出。

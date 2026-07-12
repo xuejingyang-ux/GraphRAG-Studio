@@ -12,12 +12,23 @@
 
 ## 文档管理
 
+文档、索引生成的节点和关系均包含 `kb_id`。上传接口使用 multipart 字段 `kb_id` 指定目标知识库。
+
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | POST | `/documents/upload` | 上传文档，支持 PDF/DOCX/DOC/PPTX/PPT/PNG/JPG/JPEG/HTML/TXT/MD |
 | GET | `/documents/{doc_id}` | 获取文档详情 |
 | GET | `/documents` | 分页获取文档列表 |
 | DELETE | `/documents/{doc_id}` | 删除文档及其图谱节点和边 |
+
+## 知识库与智能体
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/knowledge-bases` | 获取知识库及文档、节点、关系统计 |
+| GET | `/agents` | 获取四个内置智能体及绑定知识库 |
+
+内置 `agent_medical`、`agent_technical`、`agent_web`、`agent_general`。`POST /query` 接受 `agent_id`（默认 `auto`）和可选 `kb_id`。手动模式严格使用智能体绑定的知识库；自动模式根据命中实体所属知识库、实时意图或通用回退进行路由。
 
 ## 索引任务
 
@@ -30,7 +41,7 @@
 
 ## 知识图谱
 
-图谱由三层关系共同组成：文档实体之间使用 `CO_OCCURS_IN` 保留页面或文本块共现；结构化医疗字段会生成 `HAS_SYMPTOM`、`DIAGNOSED_BY`、`TREATED_BY`、`TREATED_WITH`、`VISITS_DEPARTMENT`，普通文本中的明确关系动词会生成 `CAUSES`、`IS_A`、`TREATS`、`LOCATED_IN`、`ASSOCIATED_WITH`；系统再使用 `INSTANCE_OF` 和 `HAS_CATEGORY` 构建“知识图谱总览 → 类型 → 实体”的全局骨架。语义边包含 `evidence` 和 `page` 来源，无法可靠判断的关系仍只保留为共现边。
+图谱由三层关系共同组成：文档实体之间使用 `CO_OCCURS_IN` 保留页面或文本块共现；结构化医疗字段会生成 `HAS_SYMPTOM`、`DIAGNOSED_BY`、`TREATED_BY`、`TREATED_WITH`、`VISITS_DEPARTMENT`，普通文本中的明确关系动词会生成 `CAUSES`、`IS_A`、`TREATS`、`LOCATED_IN`、`ASSOCIATED_WITH`；系统使用 `HAS_KNOWLEDGE_BASE`、`HAS_CATEGORY` 和 `INSTANCE_OF` 构建“知识图谱总览 → 知识库 → 类型 → 实体”的全局骨架。语义边包含 `evidence`、`page` 和 `kb_id`，无法可靠判断的关系仍只保留为共现边。
 
 | 方法 | 路径 | 说明 |
 |---|---|---|

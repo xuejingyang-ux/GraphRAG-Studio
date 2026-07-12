@@ -9,6 +9,8 @@ const AppState = {
   activeJobs: {},
   chatHistory: [],
   conversation: [],
+  knowledgeBases: [],
+  agents: [],
   health: null,
   stats: null,
 };

@@ -26,6 +26,17 @@ async function loadDocuments(pageSize = 50) {
   return payload;
 }
 
+async function loadAgentCatalog() {
+  const [knowledgeBases, agents] = await Promise.all([api.listKnowledgeBases(), api.listAgents()]);
+  AppState.knowledgeBases = knowledgeBases.items;
+  AppState.agents = agents.items;
+  return { knowledgeBases: AppState.knowledgeBases, agents: AppState.agents };
+}
+
+function knowledgeBaseName(kbId) {
+  return AppState.knowledgeBases.find((item) => item.kb_id === kbId)?.name || kbId || "未分类";
+}
+
 async function loadKg(force = false) {
   if (AppState.kg.loaded && !force) return AppState.kg;
   const [nodesPayload, edgesPayload] = await Promise.allSettled([
@@ -162,7 +173,7 @@ function renderDocsTable(docs, compact = false) {
         <tbody>${docs
           .map((doc) => `
             <tr data-doc-id="${escapeHtml(doc.doc_id)}" data-job-id="${escapeHtml(doc.job_id || "")}">
-              <td><strong>${escapeHtml(doc.filename)}</strong><div class="small">${formatBytes(doc.size)}</div>${doc.error ? `<div class="small" style="color:var(--red)">${escapeHtml(doc.error)}</div>` : ""}</td>
+              <td><strong>${escapeHtml(doc.filename)}</strong><div class="small">${formatBytes(doc.size)} · ${escapeHtml(knowledgeBaseName(doc.kb_id))}</div>${doc.error ? `<div class="small" style="color:var(--red)">${escapeHtml(doc.error)}</div>` : ""}</td>
               <td>${escapeHtml((doc.format || "").toUpperCase())}</td>
               <td>${doc.pages || "—"}</td>
               <td>${statusBadge(doc.status)}<div style="margin-top:6px">${progressBar(doc.progress || 0)}</div><div class="small">${escapeHtml(doc.stage || "")}</div>${resultSummary(doc.result)}</td>
@@ -192,8 +203,17 @@ function validateFile(file) {
 
 async function renderDocuments() {
   main().className = "main";
+  try {
+    await loadAgentCatalog();
+  } catch (error) {
+    AppState.knowledgeBases = [
+      { kb_id: "kb_medical", name: "医疗知识库" },
+      { kb_id: "kb_technical", name: "GraphRAG 技术知识库" },
+    ];
+  }
   main().innerHTML = pageHead("文档管理", "上传、索引、监控和管理知识文档。") + `
     <section class="card glow">
+      <div class="toolbar"><label for="upload-kb"><strong>所属知识库</strong></label><select class="select" id="upload-kb" style="max-width:320px">${AppState.knowledgeBases.map((item) => `<option value="${item.kb_id}">${escapeHtml(item.name)}</option>`).join("")}</select><span class="small">上传后的实体和关系只供该知识库智能体检索</span></div>
       <div class="upload-zone" id="upload-zone">
         <input id="file-input" type="file" multiple accept=".pdf,.docx,.doc,.pptx,.ppt,.png,.jpg,.jpeg,.html" />
         <div><div class="upload-icon">⇧</div><h2>将文件拖放到此处</h2><p class="small">PDF · DOCX · DOC · PPTX · PPT · PNG · JPG · HTML · 单文件最大 200MB</p><button class="btn btn-primary" type="button">选择文件</button></div>
@@ -244,7 +264,7 @@ async function uploadFiles(files) {
     const rowId = `upload-${Math.random().toString(36).slice(2)}`;
     resultRoot?.insertAdjacentHTML("beforeend", `<div class="upload-result" id="${rowId}"><strong>${escapeHtml(file.name)}</strong><span>上传中…</span></div>`);
     try {
-      const doc = await api.uploadDocument(file);
+      const doc = await api.uploadDocument(file, $("#upload-kb")?.value || "kb_technical");
       $(`#${rowId} span`)?.replaceChildren(document.createTextNode("上传成功"));
       toast(`${doc.filename} uploaded`, "success");
       const yes = await confirmModal("现在开始索引吗？", `${doc.filename} 已上传。`, "是，开始索引");
@@ -414,9 +434,13 @@ async function renderGraphPage(params = {}) {
 
 function drawFilteredGraph(focusNodeId = "") {
   const docId = $("#graph-doc-filter")?.value || "";
+  const selectedKbId = AppState.documents.find((item) => item.doc_id === docId)?.kb_id || "";
   const types = new Set($$("#type-filters input:checked").map((input) => input.value));
   const confidences = new Set($$("#confidence-filters input:checked").map((input) => input.value));
-  const nodes = AppState.kg.nodes.filter((node) => (!docId || node.doc_id === docId || node.is_hub) && types.has(node.type) && confidences.has(node.confidence));
+  const nodes = AppState.kg.nodes.filter((node) => {
+    const inScope = !docId || node.doc_id === docId || (node.is_hub && node.kb_id === selectedKbId) || node.kb_id === "__global__";
+    return inScope && types.has(node.type) && confidences.has(node.confidence);
+  });
   const nodeIds = new Set(nodes.map((node) => node.node_id));
   const edges = AppState.kg.edges.filter((edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target));
   activeGraph?.destroy?.();
@@ -457,10 +481,16 @@ async function showNodeDetail(nodeId) {
 async function renderChat(params = {}) {
   main().className = "main";
   AppState.conversation = [];
+  try {
+    await loadAgentCatalog();
+  } catch (error) {
+    AppState.agents = [];
+  }
   main().innerHTML = pageHead("智能问答", "混合问答：知识图谱走 ReAct，实时问题联网检索，其他问题由通用大模型回答。") + `
     <section class="chat-layout">
       <aside class="card chat-history"><h2>历史记录</h2><div id="history-list"></div></aside>
       <section class="chat-area">
+        <div class="toolbar agent-selector"><label for="chat-agent"><strong>智能体</strong></label><select class="select" id="chat-agent" style="max-width:300px"><option value="auto">自动选择（Supervisor）</option>${AppState.agents.map((item) => `<option value="${item.agent_id}">${escapeHtml(item.name)}${item.kb_name ? ` · ${escapeHtml(item.kb_name)}` : ""}</option>`).join("")}</select><span class="small" id="agent-description">根据问题自动选择知识库、联网或通用智能体</span></div>
         <div class="messages" id="messages"></div>
         <div class="tag-row" id="suggested-prompts"></div>
         <div class="chat-input-row"><textarea class="textarea" id="chat-input" placeholder="询问当前知识图谱；批量模式下每行一个问题..."></textarea><button class="btn btn-secondary" id="batch-chat">批量</button><button class="btn btn-primary" id="send-chat">发送</button></div>
@@ -468,6 +498,10 @@ async function renderChat(params = {}) {
     </section>
   `;
   $("#chat-input").value = params.q || "";
+  $("#chat-agent").addEventListener("change", (event) => {
+    const selected = AppState.agents.find((item) => item.agent_id === event.target.value);
+    $("#agent-description").textContent = selected?.description || "根据问题自动选择知识库、联网或通用智能体";
+  });
   $("#suggested-prompts").innerHTML = ["高血压有哪些常见症状和治疗方法？", "出现持续咳嗽和发热应该考虑哪些疾病？", "糖尿病常用哪些药物，应前往什么科室？", "哪些疾病通常建议到呼吸内科就诊？", "今天踢世界杯的球队名称"]
     .map((prompt) => `<button class="badge" data-prompt="${escapeHtml(prompt)}">${escapeHtml(prompt)}</button>`)
     .join("");
@@ -531,7 +565,7 @@ async function sendChat() {
   const thinking = appendMessage("ai", '<span class="thinking"><span></span><span></span><span></span></span>');
   try {
     const history = AppState.conversation.slice(-10);
-    const result = await api.query(question, history);
+    const result = await api.query(question, history, $("#chat-agent")?.value || "auto");
     thinking.remove();
     renderAnswer(result);
     AppState.conversation.push(
@@ -556,7 +590,7 @@ async function sendBatchChat() {
   const button = $("#batch-chat");
   button.disabled = true;
   try {
-    const created = await api.queryBatch(questions);
+    const created = await api.queryBatch(questions, $("#chat-agent")?.value || "auto");
     const batch = await api.getBatch(created.batch_id);
     $("#messages").innerHTML = "";
     batch.results.forEach((result) => {
@@ -584,7 +618,12 @@ function renderAnswer(result, clear = false) {
     general_llm: "通用大模型",
   };
   node.innerHTML += `
-    <div class="tag-row answer-meta"><span class="badge">模式：${escapeHtml(modeLabels[result.answer_mode] || result.answer_mode || "历史记录")}</span></div>
+    <div class="tag-row answer-meta">
+      <span class="badge">模式：${escapeHtml(modeLabels[result.answer_mode] || result.answer_mode || "历史记录")}</span>
+      ${result.agent_name ? `<span class="badge">智能体：${escapeHtml(result.agent_name)}</span>` : ""}
+      ${result.kb_name ? `<span class="badge">知识库：${escapeHtml(result.kb_name)}</span>` : ""}
+    </div>
+    ${result.route_reason ? `<p class="small route-reason">路由原因：${escapeHtml(result.route_reason)}</p>` : ""}
     <details class="tool-call"><summary>Tool Calls (${tools.length} steps)</summary><pre>${escapeHtml(JSON.stringify(tools, null, 2))}</pre></details>
     <div class="tag-row">${cited.map((item) => `<a class="badge type-${item.type}" href="#/graph?node=${encodeURIComponent(item.node_id)}">◉ ${escapeHtml(item.name)}</a>`).join("")}</div>
     ${sources.length ? `<div class="answer-sources"><strong>信息来源</strong><ol>${sources.map((item) => `<li><a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.title)}</a><div class="small">${escapeHtml(item.snippet || "")}</div></li>`).join("")}</ol></div>` : ""}
@@ -710,7 +749,7 @@ async function renderSystem() {
     const [health, formats] = await Promise.all([api.health(), api.formats()]);
     $("#system-health").innerHTML = Object.entries(health.services).map(([name, service]) => `<p>${escapeHtml(name)} ${service.ok ? statusBadge("indexed") : statusBadge("failed")} <span class="small">${escapeHtml(service.detail)}</span></p>`).join("");
     $("#formats").innerHTML = `<div class="tag-row">${formats.formats.map((item) => `<span class="badge">${escapeHtml(item.ext)}</span>`).join("")}</div><p class="small">Max ${formats.max_size_mb}MB per file</p>`;
-    const endpoints = ["documents/upload", "documents/{id}", "documents", "index/start", "index/status/{id}", "index/result/{id}", "index/jobs/{id}", "kg/nodes", "kg/edges", "kg/nodes/{id}", "kg/nodes/{id}/neighbors", "kg/stats", "kg/export", "query", "query/batch", "query/batch/{id}", "query/history", "search/entities", "search/path", "search/graph", "health", "system/stats", "system/formats", "system/demo"];
+    const endpoints = ["knowledge-bases", "agents", "documents/upload", "documents/{id}", "documents", "index/start", "index/status/{id}", "index/result/{id}", "index/jobs/{id}", "kg/nodes", "kg/edges", "kg/nodes/{id}", "kg/nodes/{id}/neighbors", "kg/stats", "kg/export", "query", "query/batch", "query/batch/{id}", "query/history", "search/entities", "search/path", "search/graph", "health", "system/stats", "system/formats", "system/demo"];
     $("#api-coverage").innerHTML = `<div class="tag-row">${endpoints.map((item) => `<span class="badge indexed">✓ ${escapeHtml(item)}</span>`).join("")}</div>`;
   } catch (error) {
     showError(error, "系统信息加载失败");

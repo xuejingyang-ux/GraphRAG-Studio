@@ -98,6 +98,7 @@ GraphRAG Studio 将文档自动解析为**可交互的知识图谱**，提供图
 - MinerU 文档解析 + LangExtract 实体抽取自动索引链路
 - 全局知识图谱的可视化浏览与交互
 - 基于 Agentic-RAG（DeepSeek + LangChain）的多轮问答
+- 医疗与 GraphRAG 技术知识库隔离，上传时选择归属；Supervisor 自动路由或手动选择医疗、技术、联网、通用四个智能体
 - 实体搜索、路径搜索、子图搜索
 - 系统健康监控与任务状态看板
 
@@ -1211,7 +1212,7 @@ if (nodeHighlight) {
 
 ## 六、后端接口依赖
 
-GraphRAG Studio 前端依赖以下 25 个 FastAPI 后端接口，服务地址 `http://localhost:8000/api/v1`，统一响应格式 `{code, msg, request_id, data}`。
+GraphRAG Studio 前端依赖以下 27 个 FastAPI 后端接口，服务地址 `http://localhost:8000/api/v1`，统一响应格式 `{code, msg, request_id, data}`。
 
 ### A 组：文档管理
 
@@ -1356,7 +1357,7 @@ GraphRAG Studio 前端依赖以下 25 个 FastAPI 后端接口，服务地址 `h
 
 ### 8.3 API 覆盖验收
 
-所有 25 个后端 API 端点在前端代码中均有明确的调用时机，且均通过 `api.js` 封装层调用，错误统一由 `APIError` 捕获处理。
+所有 27 个后端 API 端点在前端代码中均有明确的调用时机，且均通过 `api.js` 封装层调用，错误统一由 `APIError` 捕获处理。
 
 ---
 
@@ -1380,7 +1381,7 @@ GraphRAG Studio 前端依赖以下 25 个 FastAPI 后端接口，服务地址 `h
 
 | 类型 | 路径 | 说明 |
 |------|------|------|
-| 规范文档 | `docs/backend_service_specification-v1.0.md` | FastAPI 后端 25 个接口规范 |
+| 规范文档 | `docs/backend_service_specification-v1.0.md` | FastAPI 后端 27 个接口规范 |
 | 规范文档 | `docs/frontend_design_specification-v1.0.md` | 前端 SPA 设计规范（5 页面） |
 | 规范文档 | `docs/product_requirements_document-v1.0.md` | 本文档（产品需求文档） |
 | 前端入口 | `graphrag_pipeline/static/app/index.html` | SPA 主入口（待实现） |
@@ -1395,7 +1396,7 @@ GraphRAG Studio 前端依赖以下 25 个 FastAPI 后端接口，服务地址 `h
 | GraphRAG | 知识图谱增强的 RAG（检索增强生成）系统 |
 | KG | Knowledge Graph，知识图谱 |
 | Entity | 实体，知识图谱中的节点，包含名称、类型、页码、置信度等属性 |
-| Relation | 关系，包含实体共现 `CO_OCCURS_IN`、医疗/文本语义关系、实体归类 `INSTANCE_OF` 和类型汇总 `HAS_CATEGORY`；语义关系保留页码与证据文本 |
+| Relation | 关系，包含实体共现 `CO_OCCURS_IN`、医疗/文本语义关系、知识库归属 `HAS_KNOWLEDGE_BASE`、实体归类 `INSTANCE_OF` 和类型汇总 `HAS_CATEGORY`；关系保留 `kb_id`，语义关系还保留页码与证据文本 |
 | MinerU | 文档解析工具，将 PDF/DOCX 等格式解析为结构化文本 |
 | LangExtract | 基于 LLM 的实体抽取框架 |
 | Agentic-RAG | 基于 ReAct 框架的智能问答，LLM 通过多步工具调用推理 |

@@ -24,7 +24,7 @@ from urllib.parse import urlencode, urlparse
 from urllib.request import Request as UrlRequest, urlopen
 
 from dotenv import load_dotenv
-from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Query, Request, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -42,7 +42,7 @@ for env_path in (PROJECT_DIR / ".env", PROJECT_DIR.parent / ".env"):
     if env_path.exists():
         load_dotenv(env_path)
 
-APP_VERSION = "v1.1.0"
+APP_VERSION = "v1.2.0"
 API_PREFIX = "/api/v1"
 MAX_UPLOAD_BYTES = 200 * 1024 * 1024
 SUPPORTED_FORMATS = {
@@ -70,10 +70,71 @@ MINERU_TIMEOUT_SECONDS = int(os.getenv("MINERU_TIMEOUT_SECONDS", "240"))
 db_lock = threading.RLock()
 cancel_flags: set[str] = set()
 logger = logging.getLogger("graphrag-studio")
+SYSTEM_KB_ID = "__global__"
 
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+
+
+def default_knowledge_bases() -> list[dict[str, Any]]:
+    created_at = now_iso()
+    return [
+        {"kb_id": "kb_medical", "name": "医疗知识库", "domain": "medical", "description": "疾病、症状、治疗、药物和科室知识。", "created_at": created_at},
+        {"kb_id": "kb_technical", "name": "GraphRAG 技术知识库", "domain": "technical", "description": "GraphRAG、RAG、LangChain、文档解析和知识图谱技术知识。", "created_at": created_at},
+    ]
+
+
+def default_agents() -> list[dict[str, Any]]:
+    return [
+        {"agent_id": "agent_medical", "name": "医疗知识智能体", "description": "仅基于医疗知识库进行可追溯问答。", "kb_id": "kb_medical", "mode": "knowledge_graph", "allow_web_search": False},
+        {"agent_id": "agent_technical", "name": "GraphRAG 技术智能体", "description": "基于技术知识库回答 GraphRAG 与工程实现问题。", "kb_id": "kb_technical", "mode": "knowledge_graph", "allow_web_search": False},
+        {"agent_id": "agent_web", "name": "实时联网智能体", "description": "检索赛程、天气、新闻等实时信息并展示来源。", "kb_id": None, "mode": "web_search", "allow_web_search": True},
+        {"agent_id": "agent_general", "name": "通用问答智能体", "description": "处理未命中知识库且不需要实时检索的通用问题。", "kb_id": None, "mode": "general_llm", "allow_web_search": False},
+    ]
+
+
+def infer_kb_id(filename: str = "", doc_id: str = "", node_type: str = "") -> str:
+    text = f"{filename} {doc_id}".lower()
+    medical_types = {"DISEASE", "SYMPTOM", "TREATMENT", "DRUG", "DEPARTMENT"}
+    if any(token in text for token in ("medical", "医疗", "疾病", "药物")) or node_type in medical_types:
+        return "kb_medical"
+    return "kb_technical"
+
+
+def ensure_db_schema(db: dict[str, Any]) -> bool:
+    changed = False
+    for table in ("documents", "jobs", "nodes", "edges", "queries", "batches", "knowledge_bases", "agents"):
+        if table not in db:
+            db[table] = []
+            changed = True
+    if not db["knowledge_bases"]:
+        db["knowledge_bases"] = default_knowledge_bases()
+        changed = True
+    if not db["agents"]:
+        db["agents"] = default_agents()
+        changed = True
+    doc_kbs: dict[str, str] = {}
+    for doc in db["documents"]:
+        if not doc.get("kb_id"):
+            doc["kb_id"] = infer_kb_id(str(doc.get("filename", "")), str(doc.get("doc_id", "")))
+            changed = True
+        doc_kbs[str(doc.get("doc_id", ""))] = str(doc["kb_id"])
+    for job in db["jobs"]:
+        if not job.get("kb_id"):
+            job["kb_id"] = doc_kbs.get(str(job.get("doc_id", "")), "kb_technical")
+            changed = True
+    node_kbs: dict[str, str] = {}
+    for node in db["nodes"]:
+        if not node.get("kb_id"):
+            node["kb_id"] = SYSTEM_KB_ID if node.get("is_hub") else doc_kbs.get(str(node.get("doc_id", "")), infer_kb_id(node_type=str(node.get("type", ""))))
+            changed = True
+        node_kbs[str(node.get("node_id", ""))] = str(node["kb_id"])
+    for edge in db["edges"]:
+        if not edge.get("kb_id"):
+            edge["kb_id"] = doc_kbs.get(str(edge.get("doc_id", "")), node_kbs.get(str(edge.get("source", "")), SYSTEM_KB_ID if edge.get("is_hub_edge") else "kb_technical"))
+            changed = True
+    return changed
 
 
 def new_id(prefix: str) -> str:
@@ -103,6 +164,8 @@ def empty_db() -> dict[str, Any]:
         "edges": [],
         "queries": [],
         "batches": [],
+        "knowledge_bases": default_knowledge_bases(),
+        "agents": default_agents(),
     }
 
 
@@ -112,7 +175,10 @@ def load_db() -> dict[str, Any]:
     if not DB_PATH.exists():
         return empty_db()
     try:
-        return json.loads(DB_PATH.read_text(encoding="utf-8"))
+        db = json.loads(DB_PATH.read_text(encoding="utf-8"))
+        if ensure_db_schema(db):
+            save_db(db)
+        return db
     except Exception:
         return empty_db()
 
@@ -166,10 +232,14 @@ class StartIndexPayload(BaseModel):
 class QueryPayload(BaseModel):
     question: str
     history: list[dict[str, str]] = Field(default_factory=list)
+    agent_id: str = "auto"
+    kb_id: str | None = None
 
 
 class BatchPayload(BaseModel):
     questions: list[str]
+    agent_id: str = "auto"
+    kb_id: str | None = None
 
 
 def find_cli(name: str) -> str | None:
@@ -687,7 +757,14 @@ def rebuild_type_hubs(db: dict[str, Any]) -> dict[str, int]:
     if not entity_nodes:
         db["nodes"] = []
         db["edges"] = []
-        return {"root_nodes": 0, "category_nodes": 0, "hub_edges": 0}
+        return {"root_nodes": 0, "knowledge_base_nodes": 0, "category_nodes": 0, "hub_edges": 0}
+
+    doc_kbs = {str(doc.get("doc_id", "")): str(doc.get("kb_id", "kb_technical")) for doc in db.get("documents", [])}
+    for node in entity_nodes:
+        node["kb_id"] = str(node.get("kb_id") or doc_kbs.get(str(node.get("doc_id", "")), infer_kb_id(node_type=str(node.get("type", "")))))
+    node_kbs = {node["node_id"]: node["kb_id"] for node in entity_nodes}
+    for edge in entity_edges:
+        edge["kb_id"] = str(edge.get("kb_id") or node_kbs.get(edge.get("source"), "kb_technical"))
 
     root = {
         "node_id": "hub_root",
@@ -702,68 +779,101 @@ def rebuild_type_hubs(db: dict[str, Any]) -> dict[str, int]:
         "description": "全局根节点，连接所有实体类型公共节点。",
         "is_hub": True,
         "hub_level": "root",
+        "kb_id": SYSTEM_KB_ID,
     }
-    ordered_types = [node_type for node_type in TYPE_HUB_LABELS if any(node.get("type") == node_type for node in entity_nodes)]
-    ordered_types.extend(
-        sorted(
+    kb_lookup = {item["kb_id"]: item for item in db.get("knowledge_bases", default_knowledge_bases())}
+    active_kb_ids = sorted({node["kb_id"] for node in entity_nodes})
+    kb_nodes: list[dict[str, Any]] = []
+    category_nodes: list[dict[str, Any]] = []
+    hub_edges: list[dict[str, Any]] = []
+    for kb_id in active_kb_ids:
+        kb = kb_lookup.get(kb_id, {"name": kb_id})
+        kb_root_id = f"hub_kb_{kb_id}"
+        kb_nodes.append(
             {
-                str(node.get("type", "CONCEPT"))
-                for node in entity_nodes
-                if str(node.get("type", "CONCEPT")) not in TYPE_HUB_LABELS
-            }
-        )
-    )
-    category_nodes = []
-    hub_edges = []
-    for node_type in ordered_types:
-        label = TYPE_HUB_LABELS.get(node_type, node_type)
-        hub_id = f"hub_type_{node_type.lower()}"
-        category_nodes.append(
-            {
-                "node_id": hub_id,
-                "name": label,
-                "type": "CATEGORY",
+                "node_id": kb_root_id,
+                "name": str(kb.get("name", kb_id)),
+                "type": "KNOWLEDGE_BASE",
                 "page": 0,
                 "pages": [],
                 "confidence": "exact",
                 "degree": 0,
                 "doc_id": SYSTEM_DOC_ID,
                 "source": SYSTEM_DOC_ID,
-                "description": f"{label}类型公共节点，连接全部 {node_type} 实体。",
+                "description": str(kb.get("description", "知识库公共节点。")),
                 "is_hub": True,
-                "hub_level": "category",
-                "entity_type": node_type,
+                "hub_level": "knowledge_base",
+                "kb_id": kb_id,
             }
         )
         hub_edges.append(
             {
-                "edge_id": f"hub_edge_root_{node_type.lower()}",
+                "edge_id": f"hub_edge_global_{kb_id}",
                 "source": root["node_id"],
-                "target": hub_id,
-                "relation": "HAS_CATEGORY",
-                "weight": 2,
+                "target": kb_root_id,
+                "relation": "HAS_KNOWLEDGE_BASE",
+                "weight": 3,
                 "doc_id": SYSTEM_DOC_ID,
                 "page": 0,
                 "is_hub_edge": True,
+                "kb_id": kb_id,
             }
         )
-        for entity in entity_nodes:
-            if entity.get("type") != node_type:
-                continue
+        kb_entities = [node for node in entity_nodes if node["kb_id"] == kb_id]
+        ordered_types = [node_type for node_type in TYPE_HUB_LABELS if any(node.get("type") == node_type for node in kb_entities)]
+        ordered_types.extend(sorted({str(node.get("type", "CONCEPT")) for node in kb_entities if str(node.get("type", "CONCEPT")) not in TYPE_HUB_LABELS}))
+        for node_type in ordered_types:
+            label = TYPE_HUB_LABELS.get(node_type, node_type)
+            hub_id = f"hub_{kb_id}_type_{node_type.lower()}"
+            category_nodes.append(
+                {
+                    "node_id": hub_id,
+                    "name": label,
+                    "type": "CATEGORY",
+                    "page": 0,
+                    "pages": [],
+                    "confidence": "exact",
+                    "degree": 0,
+                    "doc_id": SYSTEM_DOC_ID,
+                    "source": SYSTEM_DOC_ID,
+                    "description": f"{kb.get('name', kb_id)}中的{label}类型公共节点。",
+                    "is_hub": True,
+                    "hub_level": "category",
+                    "entity_type": node_type,
+                    "kb_id": kb_id,
+                }
+            )
             hub_edges.append(
                 {
-                    "edge_id": "hub_edge_" + hashlib.sha1(f"{hub_id}:{entity['node_id']}".encode("utf-8")).hexdigest()[:12],
-                    "source": hub_id,
-                    "target": entity["node_id"],
-                    "relation": "INSTANCE_OF",
-                    "weight": 1,
+                    "edge_id": f"hub_edge_{kb_id}_{node_type.lower()}",
+                    "source": kb_root_id,
+                    "target": hub_id,
+                    "relation": "HAS_CATEGORY",
+                    "weight": 2,
                     "doc_id": SYSTEM_DOC_ID,
                     "page": 0,
                     "is_hub_edge": True,
+                    "kb_id": kb_id,
                 }
             )
+            for entity in kb_entities:
+                if entity.get("type") != node_type:
+                    continue
+                hub_edges.append(
+                    {
+                        "edge_id": "hub_edge_" + hashlib.sha1(f"{hub_id}:{entity['node_id']}".encode("utf-8")).hexdigest()[:12],
+                        "source": hub_id,
+                        "target": entity["node_id"],
+                        "relation": "INSTANCE_OF",
+                        "weight": 1,
+                        "doc_id": SYSTEM_DOC_ID,
+                        "page": 0,
+                        "is_hub_edge": True,
+                        "kb_id": kb_id,
+                    }
+                )
 
-    all_nodes = [root] + category_nodes + entity_nodes
+    all_nodes = [root] + kb_nodes + category_nodes + entity_nodes
     all_edges = hub_edges + entity_edges
     degree = Counter()
     for edge in all_edges:
@@ -773,7 +883,7 @@ def rebuild_type_hubs(db: dict[str, Any]) -> dict[str, int]:
         node["degree"] = degree[node["node_id"]]
     db["nodes"] = all_nodes
     db["edges"] = all_edges
-    return {"root_nodes": 1, "category_nodes": len(category_nodes), "hub_edges": len(hub_edges)}
+    return {"root_nodes": 1, "knowledge_base_nodes": len(kb_nodes), "category_nodes": len(category_nodes), "hub_edges": len(hub_edges)}
 
 
 def update_job(job_id: str, **fields: Any) -> None:
@@ -824,12 +934,16 @@ def run_index_job(job_id: str) -> None:
         for node in nodes:
             merged[node["name"].lower()] = node
         nodes = list(merged.values())
+        for node in nodes:
+            node["kb_id"] = doc["kb_id"]
 
         update_job(job_id, stage=stages[2][0], progress=stages[2][1], message=stages[2][2])
         time.sleep(0.4)
         if job_id in cancel_flags:
             raise InterruptedError("cancelled")
         edges = build_edges(nodes, doc["doc_id"], text)
+        for edge in edges:
+            edge["kb_id"] = doc["kb_id"]
         duration = round(time.perf_counter() - started, 1)
         result = {
             "nodes": len(nodes),
@@ -839,6 +953,7 @@ def run_index_job(job_id: str) -> None:
             "duration": duration,
             "parser": parser,
             "type_counts": dict(Counter(node["type"] for node in nodes)),
+            "kb_id": doc["kb_id"],
         }
 
         def mutator(db):
@@ -884,8 +999,13 @@ def build_medical_demo_data() -> tuple[dict[str, Any], list[dict[str, Any]], lis
     pages = max(1, len(split_pages(text)))
     nodes = rule_extract_entities(text, doc_id)
     edges = build_edges(nodes, doc_id, text)
+    for node in nodes:
+        node["kb_id"] = "kb_medical"
+    for edge in edges:
+        edge["kb_id"] = "kb_medical"
     doc = {
         "doc_id": doc_id,
+        "kb_id": "kb_medical",
         "filename": source_path.name,
         "format": ".md",
         "size": source_path.stat().st_size,
@@ -939,6 +1059,7 @@ def seed_demo_data() -> dict[str, Any]:
             "doc_id": doc_id,
             "source": doc_id,
             "description": f"Demo entity for {name}. It appears in the GraphRAG Studio sample knowledge base.",
+            "kb_id": "kb_technical",
         }
         for index, (name, node_type) in enumerate(names, start=1)
     ]
@@ -954,6 +1075,7 @@ def seed_demo_data() -> dict[str, Any]:
                 "weight": 1,
                 "doc_id": doc_id,
                 "page": index % 5 + 1,
+                "kb_id": "kb_technical",
             }
         )
     degree = Counter()
@@ -967,6 +1089,7 @@ def seed_demo_data() -> dict[str, Any]:
 
     doc = {
         "doc_id": doc_id,
+        "kb_id": "kb_technical",
         "filename": "demo_graphrag_studio.pdf",
         "format": ".pdf",
         "size": 1024 * 320,
@@ -1029,6 +1152,8 @@ def system_stats():
             "documents": len(db["documents"]),
             "queries": len(db["queries"]),
             "active_jobs": len([job for job in db["jobs"] if job.get("status") == "indexing"]),
+            "knowledge_bases": len(db["knowledge_bases"]),
+            "agents": len(db["agents"]),
         }
     )
 
@@ -1046,13 +1171,42 @@ def system_formats():
     )
 
 
+@app.get(f"{API_PREFIX}/knowledge-bases")
+def list_knowledge_bases():
+    db = load_db()
+    items = []
+    for kb in db["knowledge_bases"]:
+        kb_id = kb["kb_id"]
+        item = dict(kb)
+        item.update(
+            {
+                "documents": len([doc for doc in db["documents"] if doc.get("kb_id") == kb_id]),
+                "nodes": len([node for node in db["nodes"] if node.get("kb_id") == kb_id and not node.get("is_hub")]),
+                "edges": len([edge for edge in db["edges"] if edge.get("kb_id") == kb_id and not edge.get("is_hub_edge")]),
+            }
+        )
+        items.append(item)
+    return ok({"items": items, "total": len(items)})
+
+
+@app.get(f"{API_PREFIX}/agents")
+def list_agents():
+    db = load_db()
+    kb_names = {item["kb_id"]: item["name"] for item in db["knowledge_bases"]}
+    items = [{**agent, "kb_name": kb_names.get(agent.get("kb_id"))} for agent in db["agents"]]
+    return ok({"items": items, "total": len(items)})
+
+
 @app.get(f"{API_PREFIX}/system/demo")
 def system_demo():
     return ok(seed_demo_data(), "demo loaded")
 
 
 @app.post(f"{API_PREFIX}/documents/upload")
-async def upload_document(file: UploadFile = File(...)):
+async def upload_document(file: UploadFile = File(...), kb_id: str = Form("kb_technical")):
+    db = load_db()
+    if not get_item(db, "knowledge_bases", "kb_id", kb_id):
+        raise api_error(1001, "Knowledge base not found")
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in SUPPORTED_FORMATS:
         return fail(1002, f"Unsupported format: {suffix or 'unknown'}")
@@ -1066,6 +1220,7 @@ async def upload_document(file: UploadFile = File(...)):
     path.write_bytes(content)
     doc = {
         "doc_id": doc_id,
+        "kb_id": kb_id,
         "filename": file.filename or safe_name,
         "format": suffix,
         "size": len(content),
@@ -1086,9 +1241,9 @@ async def upload_document(file: UploadFile = File(...)):
 
 
 @app.get(f"{API_PREFIX}/documents")
-def list_documents(page: int = 1, page_size: int = 20):
+def list_documents(page: int = 1, page_size: int = 20, kb_id: str | None = None):
     db = load_db()
-    docs = db["documents"]
+    docs = [doc for doc in db["documents"] if not kb_id or doc.get("kb_id") == kb_id]
     start = max(0, (page - 1) * page_size)
     end = start + page_size
     return ok({"items": docs[start:end], "total": len(docs), "page": page, "page_size": page_size})
@@ -1134,6 +1289,7 @@ def start_index(payload: StartIndexPayload, background_tasks: BackgroundTasks):
         job = {
             "job_id": job_id,
             "doc_id": payload.doc_id,
+            "kb_id": doc["kb_id"],
             "status": "indexing",
             "stage": "queued",
             "progress": 1,
@@ -1189,9 +1345,9 @@ def cancel_job(job_id: str):
 
 
 @app.get(f"{API_PREFIX}/kg/nodes")
-def kg_nodes(page: int = 1, page_size: int = 200, doc_id: str | None = None):
+def kg_nodes(page: int = 1, page_size: int = 200, doc_id: str | None = None, kb_id: str | None = None):
     db = load_db()
-    nodes = [node for node in db["nodes"] if not doc_id or node.get("doc_id") == doc_id]
+    nodes = [node for node in db["nodes"] if (not doc_id or node.get("doc_id") == doc_id) and (not kb_id or node.get("kb_id") in {kb_id, SYSTEM_KB_ID})]
     if not nodes:
         return fail(3002, "KG is empty", 200, {"items": [], "total": 0})
     start = max(0, (page - 1) * page_size)
@@ -1199,9 +1355,9 @@ def kg_nodes(page: int = 1, page_size: int = 200, doc_id: str | None = None):
 
 
 @app.get(f"{API_PREFIX}/kg/edges")
-def kg_edges(page: int = 1, page_size: int = 500, doc_id: str | None = None):
+def kg_edges(page: int = 1, page_size: int = 500, doc_id: str | None = None, kb_id: str | None = None):
     db = load_db()
-    edges = [edge for edge in db["edges"] if not doc_id or edge.get("doc_id") == doc_id]
+    edges = [edge for edge in db["edges"] if (not doc_id or edge.get("doc_id") == doc_id) and (not kb_id or edge.get("kb_id") == kb_id)]
     if not edges:
         return fail(3002, "KG is empty", 200, {"items": [], "total": 0})
     start = max(0, (page - 1) * page_size)
@@ -1244,14 +1400,16 @@ def kg_node_neighbors(node_id: str, hops: int = 1):
 
 
 @app.get(f"{API_PREFIX}/kg/stats")
-def kg_stats():
+def kg_stats(kb_id: str | None = None):
     db = load_db()
+    nodes = [node for node in db["nodes"] if not kb_id or node.get("kb_id") in {kb_id, SYSTEM_KB_ID}]
+    edges = [edge for edge in db["edges"] if not kb_id or edge.get("kb_id") == kb_id]
     return ok(
         {
-            "nodes": len(db["nodes"]),
-            "edges": len(db["edges"]),
-            "types": dict(Counter(node["type"] for node in db["nodes"])),
-            "documents": dict(Counter(node["doc_id"] for node in db["nodes"])),
+            "nodes": len(nodes),
+            "edges": len(edges),
+            "types": dict(Counter(node["type"] for node in nodes)),
+            "documents": dict(Counter(node["doc_id"] for node in nodes)),
         }
     )
 
@@ -1262,13 +1420,15 @@ def kg_export():
     return ok({"nodes": db["nodes"], "edges": db["edges"], "documents": db["documents"], "exported_at": now_iso()})
 
 
-def search_entities_raw(q: str, node_type: str | None = None, limit: int = 20) -> list[dict[str, Any]]:
+def search_entities_raw(q: str, node_type: str | None = None, limit: int = 20, kb_id: str | None = None) -> list[dict[str, Any]]:
     q_lower = q.strip().lower()
     if not q_lower:
         return []
     db = load_db()
     results = []
     for node in db["nodes"]:
+        if kb_id and node.get("kb_id") not in {kb_id, SYSTEM_KB_ID}:
+            continue
         if node_type and node_type != "All" and node.get("type") != node_type:
             continue
         name = node.get("name", "")
@@ -1283,10 +1443,12 @@ def search_entities_raw(q: str, node_type: str | None = None, limit: int = 20) -
     return results[:limit]
 
 
-def list_entities_by_type(node_type: str, limit: int = 8) -> list[dict[str, Any]]:
+def list_entities_by_type(node_type: str, limit: int = 8, kb_id: str | None = None) -> list[dict[str, Any]]:
     db = load_db()
     by_name: dict[str, dict[str, Any]] = {}
     for node in db["nodes"]:
+        if kb_id and node.get("kb_id") != kb_id:
+            continue
         if node.get("type") != node_type:
             continue
         key = str(node.get("name", "")).strip().lower()
@@ -1300,11 +1462,11 @@ def list_entities_by_type(node_type: str, limit: int = 8) -> list[dict[str, Any]
     return items[:limit]
 
 
-def find_entities_in_question(question: str, limit: int = 8) -> list[dict[str, Any]]:
+def find_entities_in_question(question: str, limit: int = 8, kb_id: str | None = None) -> list[dict[str, Any]]:
     question_lower = question.lower()
     exact_matches = []
     for node in load_db()["nodes"]:
-        if node.get("is_hub"):
+        if node.get("is_hub") or (kb_id and node.get("kb_id") != kb_id):
             continue
         name = str(node.get("name", "")).strip()
         if len(name) >= 2 and name.lower() in question_lower:
@@ -1318,7 +1480,7 @@ def find_entities_in_question(question: str, limit: int = 8) -> list[dict[str, A
     # 泛化疾病名称，例如问题中的“糖尿病”应召回“1型糖尿病”和“2型糖尿病”。
     partial_matches = []
     for node in load_db()["nodes"]:
-        if node.get("is_hub") or node.get("type") != "DISEASE":
+        if node.get("is_hub") or node.get("type") != "DISEASE" or (kb_id and node.get("kb_id") != kb_id):
             continue
         name = str(node.get("name", "")).strip().lower()
         shared = longest_common_substring(question_lower, name)
@@ -1368,16 +1530,18 @@ def unique_nodes(nodes: list[dict[str, Any]], limit: int | None = None) -> list[
     return result
 
 
-def neighbor_nodes(db: dict[str, Any], node_id: str, pages: set[int] | None = None) -> list[dict[str, Any]]:
+def neighbor_nodes(db: dict[str, Any], node_id: str, pages: set[int] | None = None, kb_id: str | None = None) -> list[dict[str, Any]]:
     neighbor_ids: set[str] = set()
     for edge in db["edges"]:
+        if kb_id and edge.get("kb_id") != kb_id:
+            continue
         if pages is not None and int(edge.get("page", 1)) not in pages:
             continue
         if edge["source"] == node_id:
             neighbor_ids.add(edge["target"])
         elif edge["target"] == node_id:
             neighbor_ids.add(edge["source"])
-    nodes = [node for node in db["nodes"] if node["node_id"] in neighbor_ids]
+    nodes = [node for node in db["nodes"] if node["node_id"] in neighbor_ids and (not kb_id or node.get("kb_id") in {kb_id, SYSTEM_KB_ID})]
     nodes.sort(key=lambda node: (node.get("type", ""), -int(node.get("degree", 0)), node.get("name", "")))
     return nodes
 
@@ -1426,8 +1590,8 @@ def clean_stored_medical_notices() -> int:
 
 
 @app.get(f"{API_PREFIX}/search/entities")
-def search_entities(q: str = "", type: str | None = Query(None)):  # noqa: A002
-    return ok({"items": search_entities_raw(q, type)})
+def search_entities(q: str = "", type: str | None = Query(None), kb_id: str | None = None):  # noqa: A002
+    return ok({"items": search_entities_raw(q, type, kb_id=kb_id)})
 
 
 @app.get(f"{API_PREFIX}/search/path")
@@ -1466,8 +1630,8 @@ def search_path(from_id: str = Query(..., alias="from"), to_id: str = Query(...,
 
 
 @app.get(f"{API_PREFIX}/search/graph")
-def search_graph(q: str = "", include_neighbors: bool = True):
-    matches = search_entities_raw(q, None, 30)
+def search_graph(q: str = "", include_neighbors: bool = True, kb_id: str | None = None):
+    matches = search_entities_raw(q, None, 30, kb_id=kb_id)
     db = load_db()
     node_ids = {node["node_id"] for node in matches}
     if include_neighbors:
@@ -1476,6 +1640,8 @@ def search_graph(q: str = "", include_neighbors: bool = True):
         # local subgraph search into an accidental whole-graph traversal.
         matched_ids = set(node_ids)
         for edge in db["edges"]:
+            if kb_id and edge.get("kb_id") != kb_id:
+                continue
             if edge["source"] in matched_ids or edge["target"] in matched_ids:
                 node_ids.add(edge["source"])
                 node_ids.add(edge["target"])
@@ -1510,6 +1676,7 @@ def contextualize_question(question: str, history: list[dict[str, str]] | None) 
 def langchain_react_answer(
     question: str,
     history: list[dict[str, str]] | None,
+    kb_id: str | None = None,
 ) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]]] | None:
     """Run a model-directed ReAct loop with real graph tools.
 
@@ -1529,7 +1696,7 @@ def langchain_react_answer(
         @tool
         def resolve_graph_entities(query_text: str) -> str:
             """Resolve entity names and IDs from a user question."""
-            matches = unique_nodes(search_entities_raw(query_text, None, 8) + find_entities_in_question(query_text, 8), 8)
+            matches = unique_nodes(search_entities_raw(query_text, None, 8, kb_id=kb_id) + find_entities_in_question(query_text, 8, kb_id=kb_id), 8)
             for node in matches:
                 observed_nodes[node["node_id"]] = node
             return json.dumps(
@@ -1542,7 +1709,7 @@ def langchain_react_answer(
             """Get one-hop neighbors for a graph node; requested_types is comma-separated."""
             db = load_db()
             wanted = {item.strip().upper() for item in requested_types.split(",") if item.strip()}
-            matches = [node for node in neighbor_nodes(db, node_id) if not node.get("is_hub")]
+            matches = [node for node in neighbor_nodes(db, node_id, kb_id=kb_id) if not node.get("is_hub")]
             if wanted:
                 matches = [node for node in matches if node.get("type") in wanted]
             matches = unique_nodes(matches, 20)
@@ -1631,9 +1798,11 @@ def langchain_react_answer(
 def graph_answer(
     question: str,
     history: list[dict[str, str]] | None = None,
+    kb_id: str | None = None,
 ) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]]]:
     started = time.perf_counter()
-    react_result = langchain_react_answer(question, history)
+    scoped_candidates = graph_candidates_for_question(question, history, kb_id)
+    react_result = langchain_react_answer(question, history, kb_id) if scoped_candidates else None
     if react_result:
         answer, cited, tool_calls = react_result
         duration = round(time.perf_counter() - started, 2)
@@ -1642,13 +1811,13 @@ def graph_answer(
     db = load_db()
     resolution_question = contextualize_question(question, history)
     technology_summary = bool(re.search(r"核心技术|关键技术|主要技术|技术栈|哪些技术|技术有", resolution_question, re.I))
-    entities = list_entities_by_type("TECHNOLOGY", 8) if technology_summary else search_entities_raw(resolution_question, None, 8)
+    entities = list_entities_by_type("TECHNOLOGY", 8, kb_id=kb_id) if technology_summary else search_entities_raw(resolution_question, None, 8, kb_id=kb_id)
     if not entities:
-        entities = find_entities_in_question(resolution_question, 8)
+        entities = find_entities_in_question(resolution_question, 8, kb_id=kb_id)
     if not entities:
         tokens = re.findall(r"[A-Za-z][A-Za-z0-9+-]{2,}", resolution_question)
         for token in tokens:
-            entities.extend(search_entities_raw(token, None, 5))
+            entities.extend(search_entities_raw(token, None, 5, kb_id=kb_id))
     entities = unique_nodes(entities, 8)
 
     intents = question_intents(resolution_question)
@@ -1683,7 +1852,7 @@ def graph_answer(
             disease_groups.append(
                 {
                     node["node_id"]: node
-                    for node in neighbor_nodes(db, symptom["node_id"], context_pages)
+                    for node in neighbor_nodes(db, symptom["node_id"], context_pages, kb_id=kb_id)
                     if node.get("type") == "DISEASE"
                 }
             )
@@ -1712,7 +1881,7 @@ def graph_answer(
         context_pages = {int(page) for page in role_pages} or {int(entity.get("page", 1))}
         neighbors = [
             node
-            for node in neighbor_nodes(db, entity["node_id"], context_pages)
+            for node in neighbor_nodes(db, entity["node_id"], context_pages, kb_id=kb_id)
             if not node.get("is_hub")
         ]
         desired_types = set(intents)
@@ -1800,11 +1969,11 @@ def query_requires_realtime(question: str) -> bool:
     return bool(REALTIME_QUERY_PATTERN.search(question))
 
 
-def graph_candidates_for_question(question: str, history: list[dict[str, str]] | None = None) -> list[dict[str, Any]]:
+def graph_candidates_for_question(question: str, history: list[dict[str, str]] | None = None, kb_id: str | None = None) -> list[dict[str, Any]]:
     contextual = contextualize_question(question, history)
     if re.search(r"核心技术|关键技术|主要技术|技术栈|哪些技术|技术有", contextual, re.I):
-        return list_entities_by_type("TECHNOLOGY", 8)
-    return unique_nodes(find_entities_in_question(contextual, 8), 8)
+        return list_entities_by_type("TECHNOLOGY", 8, kb_id=kb_id)
+    return unique_nodes(find_entities_in_question(contextual, 8, kb_id=kb_id), 8)
 
 
 def world_cup_schedule_results(question: str) -> list[dict[str, str]]:
@@ -1908,14 +2077,68 @@ def call_general_model(messages: list[dict[str, str]]) -> str:
     return strip_medical_notice(str(response.choices[0].message.content or "").strip())
 
 
-def answer_question(question: str, history: list[dict[str, str]] | None = None) -> dict[str, Any]:
+def answer_question(
+    question: str,
+    history: list[dict[str, str]] | None = None,
+    agent_id: str = "auto",
+    kb_id: str | None = None,
+) -> dict[str, Any]:
     started = time.perf_counter()
     normalized_history = normalize_chat_history(history)
-    if graph_candidates_for_question(question, normalized_history):
-        answer, cited_nodes, tool_calls = graph_answer(question, normalized_history)
+    db = load_db()
+    agents = db["agents"]
+    knowledge_bases = {item["kb_id"]: item for item in db["knowledge_bases"]}
+    selected_agent: dict[str, Any] | None = None
+    selected_kb_id: str | None = None
+
+    if agent_id and agent_id != "auto":
+        selected_agent = get_item(db, "agents", "agent_id", agent_id)
+        if not selected_agent:
+            raise api_error(1001, "Agent not found")
+        selected_kb_id = str(selected_agent.get("kb_id") or kb_id or "") or None
+        route_reason = f"用户手动选择：{selected_agent['name']}"
+    else:
+        candidates = graph_candidates_for_question(question, normalized_history, kb_id=kb_id)
+        if candidates:
+            if kb_id:
+                selected_kb_id = kb_id
+            else:
+                counts = Counter(str(node.get("kb_id", "kb_technical")) for node in candidates)
+                selected_kb_id = counts.most_common(1)[0][0]
+            selected_agent = next((item for item in agents if item.get("mode") == "knowledge_graph" and item.get("kb_id") == selected_kb_id), None)
+            matched_names = "、".join(dict.fromkeys(str(node.get("name", "")) for node in candidates[:3]))
+            route_reason = f"自动路由：命中{knowledge_bases.get(selected_kb_id, {}).get('name', selected_kb_id)}实体 {matched_names}"
+        elif kb_id:
+            selected_kb_id = kb_id
+            selected_agent = next((item for item in agents if item.get("mode") == "knowledge_graph" and item.get("kb_id") == kb_id), None)
+            route_reason = f"自动路由：限定知识库 {knowledge_bases.get(kb_id, {}).get('name', kb_id)}"
+        elif query_requires_realtime(question):
+            selected_agent = next(item for item in agents if item["agent_id"] == "agent_web")
+            route_reason = "自动路由：检测到实时信息关键词"
+        else:
+            selected_agent = next(item for item in agents if item["agent_id"] == "agent_general")
+            route_reason = "自动路由：未命中知识库且不需要实时检索"
+
+    if not selected_agent:
+        raise api_error(1001, "No agent is bound to the selected knowledge base")
+    selected_mode = str(selected_agent.get("mode", "general_llm"))
+    selected_kb = knowledge_bases.get(selected_kb_id or "")
+    route_metadata = {
+        "agent_id": selected_agent["agent_id"],
+        "agent_name": selected_agent["name"],
+        "kb_id": selected_kb_id,
+        "kb_name": selected_kb.get("name") if selected_kb else None,
+        "route_reason": route_reason,
+    }
+
+    def with_route(payload: dict[str, Any]) -> dict[str, Any]:
+        return {**payload, **route_metadata}
+
+    if selected_mode == "knowledge_graph":
+        answer, cited_nodes, tool_calls = graph_answer(question, normalized_history, selected_kb_id)
         duration = tool_calls[-1]["output"]["duration"]
         calls = tool_calls[:-1]
-        return {
+        return with_route({
             "answer": answer,
             "cited_nodes": cited_nodes,
             "tool_calls": calls,
@@ -1924,9 +2147,9 @@ def answer_question(question: str, history: list[dict[str, str]] | None = None) 
             "agent": "langchain-react" if any(call.get("framework") == "langchain-react" for call in calls) else "deterministic-react-fallback",
             "answer_mode": "knowledge_graph",
             "sources": [],
-        }
+        })
 
-    if query_requires_realtime(question):
+    if selected_mode == "web_search":
         sources: list[dict[str, str]] = []
         tool_calls: list[dict[str, Any]] = []
         try:
@@ -1990,7 +2213,7 @@ def answer_question(question: str, history: list[dict[str, str]] | None = None) 
             answer = "已检索到相关实时资料，但当前未配置大模型 API。请查看下方信息来源。"
         else:
             answer = "当前问题需要实时信息，但联网检索暂时没有获得可靠结果，请稍后重试。"
-        return {
+        return with_route({
             "answer": answer,
             "cited_nodes": [],
             "tool_calls": tool_calls,
@@ -1999,7 +2222,7 @@ def answer_question(question: str, history: list[dict[str, str]] | None = None) 
             "agent": "web-search+llm" if sources and SILICONFLOW_API_KEY else "web-search",
             "answer_mode": "web_search",
             "sources": sources,
-        }
+        })
 
     tool_calls = []
     if SILICONFLOW_API_KEY:
@@ -2037,7 +2260,7 @@ def answer_question(question: str, history: list[dict[str, str]] | None = None) 
             )
     else:
         answer = "该问题未命中知识图谱，且当前未配置通用大模型 API。"
-    return {
+    return with_route({
         "answer": answer,
         "cited_nodes": [],
         "tool_calls": tool_calls,
@@ -2046,7 +2269,7 @@ def answer_question(question: str, history: list[dict[str, str]] | None = None) 
         "agent": "general-llm" if SILICONFLOW_API_KEY else "offline-fallback",
         "answer_mode": "general_llm",
         "sources": [],
-    }
+    })
 
 
 @app.post(f"{API_PREFIX}/query")
@@ -2057,7 +2280,7 @@ def query(payload: QueryPayload):
     record = {
         "query_id": new_id("qry"),
         "question": payload.question.strip(),
-        **answer_question(payload.question.strip(), history),
+        **answer_question(payload.question.strip(), history, payload.agent_id, payload.kb_id),
         "created_at": now_iso(),
     }
 
@@ -2074,7 +2297,7 @@ def query_batch(payload: BatchPayload):
     batch_id = new_id("batch")
     results = []
     for question in payload.questions[:20]:
-        results.append({"question": question, **answer_question(question)})
+        results.append({"question": question, **answer_question(question, agent_id=payload.agent_id, kb_id=payload.kb_id)})
     batch = {"batch_id": batch_id, "status": "done", "results": results, "created_at": now_iso()}
 
     def mutator(db):
@@ -2098,6 +2321,17 @@ def query_history(page: int = 1, page_size: int = 20):
     items = db["queries"]
     start = max(0, (page - 1) * page_size)
     return ok({"items": items[start : start + page_size], "total": len(items), "page": page, "page_size": page_size})
+
+
+def initialize_store_schema() -> None:
+    def mutator(db: dict[str, Any]):
+        ensure_db_schema(db)
+        return rebuild_type_hubs(db)
+
+    mutate_db(mutator)
+
+
+initialize_store_schema()
 
 
 if STATIC_DIR.exists():

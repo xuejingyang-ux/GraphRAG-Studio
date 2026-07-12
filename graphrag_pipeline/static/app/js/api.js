@@ -40,9 +40,10 @@ async function apiRequest(path, options = {}) {
 }
 
 const api = {
-  uploadDocument(file) {
+  uploadDocument(file, kbId = "kb_technical") {
     const form = new FormData();
     form.append("file", file);
+    form.append("kb_id", kbId);
     return apiRequest("/documents/upload", { method: "POST", body: form });
   },
   getDocument(docId) {
@@ -50,6 +51,7 @@ const api = {
   },
   listDocuments(params = {}) {
     const query = new URLSearchParams({ page: params.page || 1, page_size: params.page_size || 20 });
+    if (params.kb_id) query.set("kb_id", params.kb_id);
     return apiRequest(`/documents?${query}`);
   },
   deleteDocument(docId) {
@@ -70,11 +72,13 @@ const api = {
   listNodes(params = {}) {
     const query = new URLSearchParams({ page: params.page || 1, page_size: params.page_size || 200 });
     if (params.doc_id) query.set("doc_id", params.doc_id);
+    if (params.kb_id) query.set("kb_id", params.kb_id);
     return apiRequest(`/kg/nodes?${query}`);
   },
   listEdges(params = {}) {
     const query = new URLSearchParams({ page: params.page || 1, page_size: params.page_size || 500 });
     if (params.doc_id) query.set("doc_id", params.doc_id);
+    if (params.kb_id) query.set("kb_id", params.kb_id);
     return apiRequest(`/kg/edges?${query}`);
   },
   getNode(nodeId) {
@@ -83,17 +87,17 @@ const api = {
   getNeighbors(nodeId, hops = 1) {
     return apiRequest(`/kg/nodes/${encodeURIComponent(nodeId)}/neighbors?hops=${encodeURIComponent(hops)}`);
   },
-  getKgStats() {
-    return apiRequest("/kg/stats");
+  getKgStats(kbId = "") {
+    return apiRequest(`/kg/stats${kbId ? `?kb_id=${encodeURIComponent(kbId)}` : ""}`);
   },
   exportKg() {
     return apiRequest("/kg/export");
   },
-  query(question, history = []) {
-    return apiRequest("/query", { method: "POST", body: JSON.stringify({ question, history }) });
+  query(question, history = [], agentId = "auto", kbId = null) {
+    return apiRequest("/query", { method: "POST", body: JSON.stringify({ question, history, agent_id: agentId, kb_id: kbId }) });
   },
-  queryBatch(questions) {
-    return apiRequest("/query/batch", { method: "POST", body: JSON.stringify({ questions }) });
+  queryBatch(questions, agentId = "auto", kbId = null) {
+    return apiRequest("/query/batch", { method: "POST", body: JSON.stringify({ questions, agent_id: agentId, kb_id: kbId }) });
   },
   getBatch(batchId) {
     return apiRequest(`/query/batch/${encodeURIComponent(batchId)}`);
@@ -126,5 +130,11 @@ const api = {
   },
   loadDemo() {
     return apiRequest("/system/demo");
+  },
+  listKnowledgeBases() {
+    return apiRequest("/knowledge-bases");
+  },
+  listAgents() {
+    return apiRequest("/agents");
   },
 };

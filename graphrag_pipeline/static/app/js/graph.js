@@ -1,5 +1,6 @@
 const TypeColors = {
   ROOT: "#ffffff",
+  KNOWLEDGE_BASE: "#21d4a7",
   CATEGORY: "#00f5ff",
   TECHNOLOGY: "#58a6ff",
   CONCEPT: "#bc8cff",
@@ -68,6 +69,7 @@ function renderGraph(container, nodes, edges, options = {}) {
     .append("circle")
     .attr("r", (d) => {
       if (d.hub_level === "root") return 30;
+      if (d.hub_level === "knowledge_base") return 25;
       if (d.hub_level === "category") return 22;
       return Math.max(7, Math.min(20, 7 + Math.sqrt(d.degree || 0) * 2));
     })
@@ -96,7 +98,7 @@ function renderGraph(container, nodes, edges, options = {}) {
       d3
         .forceLink(edgeData)
         .id((d) => d.node_id)
-        .distance((d) => (d.relation === "HAS_CATEGORY" ? 150 : d.relation === "INSTANCE_OF" ? 105 : 80))
+        .distance((d) => (d.relation === "HAS_KNOWLEDGE_BASE" ? 190 : d.relation === "HAS_CATEGORY" ? 150 : d.relation === "INSTANCE_OF" ? 105 : 80))
         .strength((d) => (d.is_hub_edge ? 0.7 : 0.4)),
     )
     .force("charge", d3.forceManyBody().strength(-260))
@@ -105,6 +107,7 @@ function renderGraph(container, nodes, edges, options = {}) {
       "collision",
       d3.forceCollide().radius((d) => {
         if (d.hub_level === "root") return 52;
+        if (d.hub_level === "knowledge_base") return 44;
         if (d.hub_level === "category") return 38;
         return Math.max(22, Math.min(38, 18 + Math.sqrt(d.degree || 0) * 2));
       }),
@@ -231,6 +234,7 @@ function renderCanvasGraph(root, nodes, edges, options = {}) {
 
   const nodeRadius = (node) => {
     if (node.hub_level === "root") return 22;
+    if (node.hub_level === "knowledge_base") return 19;
     if (node.hub_level === "category") return 16;
     return Math.max(4, Math.min(11, 4 + Math.sqrt(node.degree || 0)));
   };
@@ -301,7 +305,7 @@ function renderCanvasGraph(root, nodes, edges, options = {}) {
       "link",
       d3.forceLink(edgeData)
         .id((node) => node.node_id)
-        .distance((edge) => (edge.relation === "HAS_CATEGORY" ? 120 : edge.relation === "INSTANCE_OF" ? 72 : 45))
+        .distance((edge) => (edge.relation === "HAS_KNOWLEDGE_BASE" ? 150 : edge.relation === "HAS_CATEGORY" ? 120 : edge.relation === "INSTANCE_OF" ? 72 : 45))
         .strength((edge) => (edge.is_hub_edge ? 0.45 : 0.08)),
     )
     .force("charge", d3.forceManyBody().strength(-48))
