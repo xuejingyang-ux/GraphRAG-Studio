@@ -1,25 +1,41 @@
 # GraphRAG Studio
 
-GraphRAG Studio 是一个按 PRD 实现的知识图谱增强 RAG 系统，包含 FastAPI 后端和原生 HTML/CSS/JS 单页前端。
+[![Version](https://img.shields.io/badge/version-v1.4.0-00d9ff)](https://github.com/xuejingyang-ux/GraphRAG-Studio)
+[![FastAPI](https://img.shields.io/badge/backend-FastAPI-009688)](https://fastapi.tiangolo.com/)
+[![Tests](https://img.shields.io/badge/tests-41%20unit%20%2B%2016%20E2E-brightgreen)](#自动化验收)
+
+GraphRAG Studio 是一个面向多知识库的 Agentic GraphRAG 系统。它将多格式文档索引为相互隔离但可统一管理的知识图谱，由 Supervisor 自动选择单个智能体，或在问题涉及多个知识库时并行调度多个专业智能体并综合答案。
+
+当前版本：`v1.4.0`。后端采用 FastAPI，前端采用原生 HTML/CSS/JavaScript，图谱根据规模自动使用 D3 SVG 或 Canvas 渲染。
+
+## 核心能力
+
+- 多格式文档：支持 PDF、DOCX、PPTX、图片、HTML、TXT 和 Markdown 上传、解析与索引。
+- 多知识库管理：文档、节点和关系使用 `kb_id` 隔离，每个知识库可以打开独立图谱。
+- 智能体管理：支持修改系统提示词、绑定知识库、工具权限和联网权限，并可创建自定义智能体。
+- 多智能体协同：Supervisor 自动识别跨知识库问题，并行委派专业智能体后综合可追溯答案。
+- 对话级智能体记忆：后端按 `conversation_id + agent_id` 保存记忆，支持查看、复用和清除。
+- 混合问答路由：知识库问题进入 GraphRAG/ReAct，实时问题联网检索，其余问题进入通用模型。
+- 质量统计：按智能体统计调用次数、平均延迟，以及基于用户反馈的准确率。
+- 知识图谱可视化：支持筛选、缩放、拖动、节点定位、邻居查询、路径搜索和 JSON/PNG 导出。
 
 ## 项目文档
 
-- [项目详细说明文档](docs/项目详细说明文档.md)：前后端技术、技术路线图、系统架构、功能模块、业务流程、数据设计、API、安装运行、验收与扩展方向。
-- [答辩 PPT 需求文档](docs/答辩PPT需求文档.md)：逐页内容要求、技术路线、视觉规范、演示方案、备用页和答辩问题。
 - [产品需求文档](docs/product_requirements_document-v1.0.md)
 - [后端接口规范](docs/backend_service_specification-v1.0.md)
 - [前端设计规范](docs/frontend_design_specification-v1.0.md)
+- [系统演示手册](docs/系统演示手册.md)
 
 ## 已实现功能
 
 - Dashboard：系统统计、健康状态、最近文档、GraphRAG 与医疗 Demo 数据加载。
-- Documents：拖拽/点击上传、格式与大小校验、索引任务启动、轮询进度、取消、删除。
-- KG Explorer：D3 力导向图、类型/文档/置信度筛选、节点高亮、详情面板、邻居查看、PNG/JSON 导出。
-- 全局图谱骨架：通过“知识图谱总览 → 类型公共节点 → 实体节点”连接所有子图，避免不同文档或页面形成孤立块。
-- QA Chat：实体提及与泛化疾病名召回、按问题意图扩展图邻居、离线结构化回答、thinking 动画、Tool Calls 折叠面板、Cited Nodes 跳转。
+- Knowledge Bases：知识库 CRUD、占用保护、数据统计和独立图谱入口。
+- Agents：智能体 CRUD、提示词/工具/联网权限配置、路由测试和调用质量统计。
+- Documents：知识库选择、拖拽上传、格式校验、索引进度、取消、重试和结果摘要。
+- KG Explorer：全局/独立图谱、D3 SVG/Canvas、自适应渲染、筛选、定位、详情和导出。
+- QA Chat：单智能体问答、跨库多智能体协同、对话记忆、实时联网、Tool Calls、引用和反馈。
 - Search：实体搜索、路径搜索、子图搜索。
-- 后端 API：按 PRD 封装 27 个 `/api/v1` 接口，统一返回 `{code,msg,request_id,data}`。
-- 加分扩展：Demo 数据集、一键图谱导出、批量问答接口、规则兜底实体抽取、暗色粒子动效界面。
+- 自动化验收：41 项 Python 测试和 16 项 Playwright 浏览器测试。
 
 ## 运行步骤
 
@@ -75,10 +91,11 @@ GraphRAG-Studio/
 
 ## API 分组
 
+- 知识库与智能体：知识库/智能体 CRUD、工具配置、路由测试、调用统计。
 - 文档管理：上传、列表、详情、删除。
 - 索引任务：启动、状态、结果、取消。
 - 知识图谱：节点、边、详情、邻居、统计、导出。
-- QA 问答：同步问答、批量问答、批量状态、历史。
+- QA 问答：同步/批量问答、多智能体协同、对话记忆、答案反馈、历史记录。
 - 搜索：实体搜索、路径搜索、子图搜索。
 - 系统：健康检查、统计、格式、Demo 数据。
 
