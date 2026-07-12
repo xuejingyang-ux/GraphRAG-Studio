@@ -2445,6 +2445,11 @@ def cross_knowledge_base_matches(
         found = unique_nodes(find_entities_in_question(context, 10, kb_id=kb_id), 10)
         if found:
             matches[kb_id] = found
+            continue
+        name_without_suffix = str(kb.get("name", "")).replace("知识库", "").strip()
+        aliases = [str(kb.get("domain", "")).strip(), *re.findall(r"[A-Za-z][A-Za-z0-9+.-]{2,}|[\u4e00-\u9fff]{2,4}", name_without_suffix)]
+        if any(alias and alias.lower() in context.lower() for alias in aliases):
+            matches[kb_id] = []
     explicit_cross = bool(re.search(r"跨知识库|跨库|联合.*知识库|综合.*知识库|多智能体协同", question, re.I))
     if explicit_cross and len(matches) < 2:
         for agent in db.get("agents", []):

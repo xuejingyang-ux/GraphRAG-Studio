@@ -55,6 +55,23 @@ class PhaseThreeCollaborationTests(unittest.TestCase):
         self.assertEqual(route["mode"], "multi_agent")
         self.assertEqual(len(route["collaborators"]), 2)
 
+    def test_cross_kb_detection_uses_knowledge_base_alias_when_a_library_is_empty(self) -> None:
+        def remove_technical_graph(db):
+            db["nodes"] = [node for node in db["nodes"] if node.get("kb_id") != "kb_technical"]
+            db["edges"] = [edge for edge in db["edges"] if edge.get("kb_id") != "kb_technical"]
+            return api_server.rebuild_type_hubs(db)
+
+        api_server.mutate_db(remove_technical_graph)
+        route = self.client.post(
+            "/api/v1/routing/test",
+            json={"question": "比较高血压的症状与 GraphRAG 的核心技术", "agent_id": "auto"},
+        ).json()["data"]
+        self.assertTrue(route["cross_kb"])
+        self.assertEqual(
+            {item["agent_id"] for item in route["collaborators"]},
+            {"agent_medical", "agent_technical"},
+        )
+
     def test_backend_agent_memory_resolves_follow_up_without_frontend_history(self) -> None:
         conversation_id = "conv_memory_test"
         first = self.client.post(
