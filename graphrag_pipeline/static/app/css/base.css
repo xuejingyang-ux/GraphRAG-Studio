@@ -1,0 +1,165 @@
+:root {
+  --bg-base: #0f1117;
+  --bg-s1: #161b22;
+  --bg-s2: #21262d;
+  --bg-s3: #1c2128;
+  --border: #30363d;
+  --border-muted: #21262d;
+  --text-1: #f0f6fc;
+  --text-2: #c9d1d9;
+  --text-3: #8b949e;
+  --text-4: #484f58;
+  --blue: #58a6ff;
+  --cyan: #00f5ff;
+  --green: #3fb950;
+  --green-btn: #238636;
+  --green-hover: #2ea043;
+  --red: #f85149;
+  --yellow: #d29922;
+  --purple: #8957e5;
+  --magenta: #ff3df2;
+  --type-tech: #58a6ff;
+  --type-concept: #bc8cff;
+  --type-person: #3fb950;
+  --type-org: #ff7b72;
+  --type-loc: #ffa657;
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+  --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.5);
+  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.6);
+  --r-sm: 4px;
+  --r-md: 6px;
+  --r-lg: 8px;
+  --r-xl: 12px;
+  --sidebar-w: 220px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  background: var(--bg-base);
+  color: var(--text-2);
+  font-family: var(--font-sans);
+}
+
+body {
+  overflow: hidden;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(rgba(0, 245, 255, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 245, 255, 0.035) 1px, transparent 1px);
+  background-size: 48px 48px;
+  animation: move-grid 24s linear infinite;
+  z-index: 0;
+}
+
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(145deg, rgba(0, 245, 255, 0.08), transparent 38%),
+    linear-gradient(315deg, rgba(255, 61, 242, 0.06), transparent 44%);
+  z-index: 0;
+}
+
+#particle-canvas {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0.72;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+h1,
+h2,
+h3,
+p {
+  margin-top: 0;
+}
+
+h1 {
+  color: var(--text-1);
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+h2 {
+  color: var(--text-1);
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+h3 {
+  color: var(--text-3);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.small {
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+.eyebrow {
+  color: var(--cyan);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.hidden {
+  display: none !important;
+}
+
+@keyframes move-grid {
+  from { transform: translate(0, 0); }
+  to { transform: translate(48px, 48px); }
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 0.55; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.15); }
+}
+
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}

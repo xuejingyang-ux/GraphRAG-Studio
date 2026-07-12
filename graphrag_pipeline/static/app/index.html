@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GraphRAG Studio</title>
+  <link rel="stylesheet" href="./css/base.css?v=1.0.1" />
+  <link rel="stylesheet" href="./css/layout.css?v=1.0.1" />
+  <link rel="stylesheet" href="./css/components.css?v=1.1.2" />
+  <script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked@9/marked.min.js"></script>
+  <script defer src="./js/api.js?v=1.1.0"></script>
+  <script defer src="./js/state.js?v=1.1.0"></script>
+  <script defer src="./js/ui.js?v=1.0.1"></script>
+  <script defer src="./js/graph.js?v=1.1.1"></script>
+  <script defer src="./js/pages.js?v=1.1.2"></script>
+  <script defer src="./js/router.js?v=1.0.1"></script>
+  <script defer src="./js/main.js?v=1.0.1"></script>
+</head>
+<body>
+  <canvas id="particle-canvas" aria-hidden="true"></canvas>
+  <div class="app" id="app-shell">
+    <header class="header">
+      <button class="icon-btn" id="sidebar-toggle" aria-label="切换侧边栏">≡</button>
+      <a class="brand" href="#/dashboard" aria-label="GraphRAG Studio 首页">
+        <span class="brand-mark">◈</span>
+        <span class="sidebar-logo-text">GraphRAG Studio</span>
+      </a>
+      <div class="global-search">
+        <input id="global-search-input" class="input" type="search" placeholder="搜索实体..." autocomplete="off" />
+        <div id="global-search-popover" class="search-popover hidden"></div>
+      </div>
+      <div class="header-status">
+        <span id="health-dot" class="status-dot status-warn"></span>
+        <span id="health-label">API: localhost:8000</span>
+      </div>
+    </header>
+
+    <aside class="sidebar" id="sidebar">
+      <nav class="nav-list" aria-label="Primary navigation">
+        <a class="nav-item" data-route="dashboard" href="#/dashboard"><span>◈</span><span class="nav-label">系统总览</span></a>
+        <a class="nav-item" data-route="documents" href="#/documents"><span>▤</span><span class="nav-label">文档管理</span><span id="documents-badge" class="nav-badge">0</span></a>
+        <a class="nav-item" data-route="graph" href="#/graph"><span>◉</span><span class="nav-label">知识图谱</span></a>
+        <a class="nav-item" data-route="chat" href="#/chat"><span>◇</span><span class="nav-label">智能问答</span><span id="chat-badge" class="nav-badge">0</span></a>
+        <a class="nav-item" data-route="search" href="#/search"><span>⊕</span><span class="nav-label">知识搜索</span></a>
+        <a class="nav-item" data-route="system" href="#/system"><span>☰</span><span class="nav-label">系统状态</span></a>
+      </nav>
+      <div class="sidebar-footer">
+        <span class="eyebrow">Agentic RAG</span>
+        <span class="small">MinerU · LangExtract · D3</span>
+      </div>
+    </aside>
+
+    <main id="main" class="main" tabindex="-1"></main>
+
+    <footer class="status-bar">
+      <div id="active-job-status" class="active-job hidden"></div>
+      <div class="status-right"><span>API v1.1.0</span><span id="footer-health-dot" class="status-dot status-warn"></span></div>
+    </footer>
+  </div>
+
+  <nav class="bottom-nav" aria-label="Mobile navigation">
+    <a data-route="dashboard" href="#/dashboard">◈<span>首页</span></a>
+    <a data-route="documents" href="#/documents">▤<span>文档</span></a>
+    <a data-route="graph" href="#/graph">◉<span>图谱</span></a>
+    <a data-route="chat" href="#/chat">◇<span>问答</span></a>
+    <a data-route="search" href="#/search">⊕<span>搜索</span></a>
+  </nav>
+
+  <div id="toast-region" class="toast-region" aria-live="polite"></div>
+  <div id="modal-root"></div>
+</body>
+</html>

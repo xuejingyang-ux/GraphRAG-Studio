@@ -1,0 +1,14 @@
+{
+  "name": "graphrag-studio",
+  "version": "1.1.0",
+  "private": true,
+  "scripts": {
+    "lint": "node scripts/lint-js.mjs && python -m py_compile graphrag_pipeline/api_server.py",
+    "test": "python -m unittest discover -s tests -v",
+    "test:e2e": "playwright test",
+    "test:all": "npm run lint && npm test && npm run test:e2e"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.55.0"
+  }
+}

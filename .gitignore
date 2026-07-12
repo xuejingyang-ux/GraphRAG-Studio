@@ -1,0 +1,12 @@
+.env
+.venv/
+node_modules/
+.playwright-cli/
+__pycache__/
+*.pyc
+*.pyo
+*.log
+output/
+graphrag_pipeline/data/store.json
+graphrag_pipeline/data/uploads/*
+!graphrag_pipeline/data/uploads/.gitkeep
