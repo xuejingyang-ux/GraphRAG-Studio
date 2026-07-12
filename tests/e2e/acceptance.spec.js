@@ -128,6 +128,39 @@ test.describe.serial("GraphRAG Studio PRD browser acceptance", () => {
     } });
   });
 
+  test("Supervisor collaborates across knowledge bases and attributes feedback statistics", async ({ page }) => {
+    await page.goto("/#/chat");
+    await page.locator("#chat-input").fill("比较高血压的常见症状与 GraphRAG 的核心技术");
+    await page.locator("#send-chat").click();
+    const answer = page.locator(".message.ai").last();
+    await expect(answer).toContainText("模式：多智能体协同");
+    await expect(answer).toContainText("多智能体协同 Supervisor");
+    await expect(answer).toContainText("医疗知识智能体");
+    await expect(answer).toContainText("GraphRAG 技术智能体");
+    await expect(answer.locator(".collaboration-trace .badge")).toHaveCount(2);
+    await answer.locator('[data-query-feedback="true"]').click();
+    await expect(answer.locator(".feedback-status")).toContainText("反馈已记录");
+
+    await page.goto("/#/agents");
+    await expect(page.locator('[data-agent-usage="agent_medical"]')).toContainText("调用次数");
+    await expect(page.locator('[data-agent-usage="agent_medical"]')).toContainText("准确率");
+    await expect(page.locator('[data-agent-usage="agent_technical"]')).toContainText("准确率");
+  });
+
+  test("conversation-level agent memory survives when frontend history is absent", async ({ page }) => {
+    await page.goto("/#/chat");
+    await page.locator("#chat-input").fill("2型糖尿病有哪些症状？");
+    await page.locator("#send-chat").click();
+    await expect(page.locator(".message.ai").last()).toContainText("2型糖尿病");
+    await page.evaluate(() => { AppState.conversation = []; });
+    await page.locator("#chat-input").fill("它常用什么药，应该去什么科室？");
+    await page.locator("#send-chat").click();
+    const followUp = page.locator(".message.ai").last();
+    await expect(followUp).toContainText("二甲双胍");
+    await expect(followUp).toContainText("内分泌科");
+    await expect(followUp).toContainText("已调用对话记忆");
+  });
+
   test("hybrid mode labels web answers and renders clickable sources", async ({ page }) => {
     await page.route("**/api/v1/query", async (route) => {
       await route.fulfill({

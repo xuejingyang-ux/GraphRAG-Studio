@@ -144,6 +144,7 @@ class PRDAcceptanceTests(unittest.TestCase):
             "api.getDocument(", "api.getIndexResult(", "api.getKgStats(", "api.queryBatch(", "api.getBatch(",
             "api.getKnowledgeBase(", "api.createKnowledgeBase(", "api.updateKnowledgeBase(", "api.deleteKnowledgeBase(",
             "api.getAgent(", "api.createAgent(", "api.updateAgent(", "api.deleteAgent(", "api.testRoute(",
+            "api.getAgentStats(", "api.submitQueryFeedback(", "api.getConversationMemory(", "api.clearConversationMemory(",
         ):
             with self.subTest(call=call):
                 self.assertIn(call, pages)

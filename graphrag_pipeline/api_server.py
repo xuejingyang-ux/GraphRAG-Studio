@@ -17,6 +17,7 @@ import time
 import uuid
 import xml.etree.ElementTree as ET
 from collections import Counter, deque
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -42,7 +43,7 @@ for env_path in (PROJECT_DIR / ".env", PROJECT_DIR.parent / ".env"):
     if env_path.exists():
         load_dotenv(env_path)
 
-APP_VERSION = "v1.3.0"
+APP_VERSION = "v1.4.0"
 API_PREFIX = "/api/v1"
 MAX_UPLOAD_BYTES = 200 * 1024 * 1024
 SUPPORTED_FORMATS = {
@@ -122,7 +123,7 @@ def infer_kb_id(filename: str = "", doc_id: str = "", node_type: str = "") -> st
 
 def ensure_db_schema(db: dict[str, Any]) -> bool:
     changed = False
-    for table in ("documents", "jobs", "nodes", "edges", "queries", "batches", "knowledge_bases", "agents"):
+    for table in ("documents", "jobs", "nodes", "edges", "queries", "batches", "knowledge_bases", "agents", "conversation_memories"):
         if table not in db:
             db[table] = []
             changed = True
@@ -200,6 +201,7 @@ def empty_db() -> dict[str, Any]:
         "batches": [],
         "knowledge_bases": default_knowledge_bases(),
         "agents": default_agents(),
+        "conversation_memories": [],
     }
 
 
@@ -268,6 +270,7 @@ class QueryPayload(BaseModel):
     history: list[dict[str, str]] = Field(default_factory=list)
     agent_id: str = "auto"
     kb_id: str | None = None
+    conversation_id: str | None = Field(default=None, max_length=80)
 
 
 class BatchPayload(BaseModel):
@@ -314,6 +317,10 @@ class RouteTestPayload(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
     agent_id: str = "auto"
     kb_id: str | None = None
+
+
+class QueryFeedbackPayload(BaseModel):
+    accurate: bool
 
 
 def model_changes(payload: BaseModel) -> dict[str, Any]:
@@ -1261,6 +1268,8 @@ def system_stats():
             "active_jobs": len([job for job in db["jobs"] if job.get("status") == "indexing"]),
             "knowledge_bases": len(db["knowledge_bases"]),
             "agents": len(db["agents"]),
+            "conversation_memories": len(db["conversation_memories"]),
+            "rated_queries": len([item for item in db["queries"] if isinstance(item.get("feedback_accurate"), bool)]),
         }
     )
 
@@ -1371,6 +1380,7 @@ def delete_knowledge_base(kb_id: str):
 def list_agents():
     db = load_db()
     kb_names = {item["kb_id"]: item["name"] for item in db["knowledge_bases"]}
+    usage_stats = compute_agent_stats(db)
     items = []
     for agent in db["agents"]:
         kb_id = agent.get("kb_id")
@@ -1381,9 +1391,52 @@ def list_agents():
                 "documents": len([doc for doc in db["documents"] if kb_id and doc.get("kb_id") == kb_id]),
                 "nodes": len([node for node in db["nodes"] if kb_id and node.get("kb_id") == kb_id and not node.get("is_hub")]),
                 "edges": len([edge for edge in db["edges"] if kb_id and edge.get("kb_id") == kb_id and not edge.get("is_hub_edge")]),
+                "usage": usage_stats.get(agent["agent_id"], empty_agent_stats(agent["agent_id"])),
             }
         )
     return ok({"items": items, "total": len(items), "available_tools": AGENT_TOOL_CATALOG, "modes": sorted(AGENT_MODES)})
+
+
+def empty_agent_stats(agent_id: str) -> dict[str, Any]:
+    return {"agent_id": agent_id, "call_count": 0, "rated_count": 0, "accurate_count": 0, "accuracy": None, "average_latency": 0.0, "last_called_at": None}
+
+
+def compute_agent_stats(db: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    totals: dict[str, dict[str, Any]] = {
+        agent["agent_id"]: {**empty_agent_stats(agent["agent_id"]), "latency_total": 0.0}
+        for agent in db.get("agents", [])
+    }
+    for query_item in db.get("queries", []):
+        metrics = query_item.get("agent_metrics") or []
+        if not metrics and query_item.get("agent_id"):
+            metrics = [{"agent_id": query_item["agent_id"], "duration": query_item.get("duration", 0)}]
+        seen: set[str] = set()
+        for metric in metrics:
+            agent_id = str(metric.get("agent_id", ""))
+            if not agent_id or agent_id in seen:
+                continue
+            seen.add(agent_id)
+            item = totals.setdefault(agent_id, {**empty_agent_stats(agent_id), "latency_total": 0.0})
+            item["call_count"] += 1
+            item["latency_total"] += float(metric.get("duration") or 0)
+            created_at = query_item.get("created_at")
+            if created_at and (not item["last_called_at"] or str(created_at) > str(item["last_called_at"])):
+                item["last_called_at"] = created_at
+            if isinstance(query_item.get("feedback_accurate"), bool):
+                item["rated_count"] += 1
+                if query_item["feedback_accurate"]:
+                    item["accurate_count"] += 1
+    for item in totals.values():
+        item["average_latency"] = round(item.pop("latency_total") / item["call_count"], 3) if item["call_count"] else 0.0
+        item["accuracy"] = round(item["accurate_count"] / item["rated_count"] * 100, 1) if item["rated_count"] else None
+    return totals
+
+
+@app.get(f"{API_PREFIX}/agent-stats")
+def agent_stats():
+    db = load_db()
+    stats = compute_agent_stats(db)
+    return ok({"items": list(stats.values()), "total": len(stats), "accuracy_basis": "user_feedback"})
 
 
 @app.get(f"{API_PREFIX}/agents/{{agent_id}}")
@@ -2346,6 +2399,159 @@ def call_general_model(messages: list[dict[str, str]]) -> str:
     return strip_medical_notice(str(response.choices[0].message.content or "").strip())
 
 
+def conversation_memory_history(db: dict[str, Any], conversation_id: str | None) -> list[dict[str, str]]:
+    if not conversation_id:
+        return []
+    records = sorted(
+        [item for item in db.get("conversation_memories", []) if item.get("conversation_id") == conversation_id],
+        key=lambda item: str(item.get("updated_at", "")),
+    )
+    merged: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for record in records:
+        for turn in record.get("turns", []):
+            role = str(turn.get("role", ""))
+            content = str(turn.get("content", "")).strip()
+            key = (role, content)
+            if role in {"user", "assistant"} and content and key not in seen:
+                seen.add(key)
+                merged.append({"role": role, "content": content})
+    return normalize_chat_history(merged, 10)
+
+
+def merge_agent_memory(
+    db: dict[str, Any],
+    conversation_id: str | None,
+    provided_history: list[dict[str, str]] | None,
+) -> tuple[list[dict[str, str]], int]:
+    provided = normalize_chat_history(provided_history)
+    memory = conversation_memory_history(db, conversation_id)
+    provided_keys = {(item["role"], item["content"]) for item in provided}
+    recalled = [item for item in memory if (item["role"], item["content"]) not in provided_keys]
+    return normalize_chat_history([*recalled, *provided], 10), len(recalled)
+
+
+def cross_knowledge_base_matches(
+    question: str,
+    history: list[dict[str, str]] | None,
+    db: dict[str, Any],
+) -> dict[str, list[dict[str, Any]]]:
+    previous_users = [item["content"] for item in normalize_chat_history(history) if item["role"] == "user"]
+    uses_context = bool(re.search(r"它们|两者|分别|比较|对比|上述|这些|跨知识库|跨库|联合|综合", question, re.I))
+    context = "\n".join([*(previous_users[-2:] if uses_context else []), question])
+    matches: dict[str, list[dict[str, Any]]] = {}
+    for kb in db.get("knowledge_bases", []):
+        kb_id = str(kb["kb_id"])
+        found = unique_nodes(find_entities_in_question(context, 10, kb_id=kb_id), 10)
+        if found:
+            matches[kb_id] = found
+    explicit_cross = bool(re.search(r"跨知识库|跨库|联合.*知识库|综合.*知识库|多智能体协同", question, re.I))
+    if explicit_cross and len(matches) < 2:
+        for agent in db.get("agents", []):
+            if agent.get("mode") == "knowledge_graph" and agent.get("kb_id"):
+                matches.setdefault(str(agent["kb_id"]), [])
+    return matches
+
+
+def resolve_route_plan(
+    question: str,
+    history: list[dict[str, str]] | None = None,
+    agent_id: str = "auto",
+    kb_id: str | None = None,
+    db: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    db = db or load_db()
+    if (not agent_id or agent_id == "auto") and not kb_id:
+        kb_matches = cross_knowledge_base_matches(question, history, db)
+        collaborators = []
+        for current_kb_id, nodes in kb_matches.items():
+            agent = next(
+                (item for item in db["agents"] if item.get("mode") == "knowledge_graph" and item.get("kb_id") == current_kb_id),
+                None,
+            )
+            kb = get_item(db, "knowledge_bases", "kb_id", current_kb_id)
+            if agent and kb:
+                collaborators.append(
+                    {
+                        "agent_id": agent["agent_id"],
+                        "agent_name": agent["name"],
+                        "kb_id": current_kb_id,
+                        "kb_name": kb["name"],
+                        "matched_entities": [node.get("name") for node in nodes[:5]],
+                    }
+                )
+        if len(collaborators) >= 2:
+            kb_names = "、".join(item["kb_name"] for item in collaborators)
+            return {
+                "cross_kb": True,
+                "collaborators": collaborators,
+                "route_reason": f"自动路由：问题涉及多个知识库（{kb_names}），启用多智能体协同",
+            }
+    selected_agent, selected_kb_id, reason = select_agent_route(question, history, agent_id, kb_id, db)
+    selected_kb = get_item(db, "knowledge_bases", "kb_id", selected_kb_id) if selected_kb_id else None
+    return {
+        "cross_kb": False,
+        "collaborators": [
+            {
+                "agent_id": selected_agent["agent_id"],
+                "agent_name": selected_agent["name"],
+                "kb_id": selected_kb_id,
+                "kb_name": selected_kb.get("name") if selected_kb else None,
+                "matched_entities": [],
+            }
+        ],
+        "route_reason": reason,
+    }
+
+
+def update_conversation_memories(
+    db: dict[str, Any],
+    conversation_id: str,
+    question: str,
+    result: dict[str, Any],
+) -> None:
+    metrics = result.get("agent_metrics") or []
+    for metric in metrics:
+        agent_id = str(metric.get("agent_id", ""))
+        if not agent_id:
+            continue
+        record = next(
+            (
+                item for item in db["conversation_memories"]
+                if item.get("conversation_id") == conversation_id and item.get("agent_id") == agent_id
+            ),
+            None,
+        )
+        if record is None:
+            record = {
+                "memory_id": new_id("mem"),
+                "conversation_id": conversation_id,
+                "agent_id": agent_id,
+                "kb_id": metric.get("kb_id"),
+                "turns": [],
+                "created_at": now_iso(),
+            }
+            db["conversation_memories"].append(record)
+        sub_answer = next(
+            (item.get("answer") for item in result.get("sub_answers", []) if item.get("agent_id") == agent_id),
+            result.get("answer", ""),
+        )
+        record["turns"] = [
+            *record.get("turns", []),
+            {"role": "user", "content": question[:2400]},
+            {"role": "assistant", "content": str(sub_answer)[:2400]},
+        ][-12:]
+        record["last_entities"] = list(
+            dict.fromkeys(
+                str(node.get("name", ""))
+                for node in result.get("cited_nodes", [])
+                if node.get("name") and (not metric.get("kb_id") or node.get("kb_id") == metric.get("kb_id"))
+            )
+        )[:20]
+        record["last_route_reason"] = result.get("route_reason")
+        record["updated_at"] = now_iso()
+
+
 def select_agent_route(
     question: str,
     history: list[dict[str, str]] | None = None,
@@ -2394,15 +2600,116 @@ def select_agent_route(
     return selected_agent, selected_kb_id, route_reason
 
 
+def collaborative_answer(
+    question: str,
+    history: list[dict[str, str]],
+    plan: dict[str, Any],
+    conversation_id: str | None,
+    memory_recalled: int,
+) -> dict[str, Any]:
+    started = time.perf_counter()
+    sub_results: list[dict[str, Any]] = []
+    all_nodes: list[dict[str, Any]] = []
+    all_sources: list[dict[str, Any]] = []
+    tool_calls: list[dict[str, Any]] = []
+    agent_metrics: list[dict[str, Any]] = []
+    def delegate(collaborator: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+        return collaborator, answer_question(
+            question, history, collaborator["agent_id"], collaborator["kb_id"], conversation_id=None
+        )
+
+    with ThreadPoolExecutor(max_workers=min(4, len(plan["collaborators"]))) as executor:
+        delegated_results = list(executor.map(delegate, plan["collaborators"]))
+
+    for collaborator, sub_result in delegated_results:
+        sub_results.append({**collaborator, "answer": sub_result["answer"], "duration": sub_result.get("duration", 0)})
+        all_nodes.extend(sub_result.get("cited_nodes", []))
+        all_sources.extend(sub_result.get("sources", []))
+        agent_metrics.append(
+            {
+                "agent_id": collaborator["agent_id"],
+                "agent_name": collaborator["agent_name"],
+                "kb_id": collaborator["kb_id"],
+                "kb_name": collaborator["kb_name"],
+                "duration": float(sub_result.get("duration") or 0),
+            }
+        )
+        tool_calls.append(
+            {
+                "tool": "delegate_to_agent",
+                "input": {"agent_id": collaborator["agent_id"], "kb_id": collaborator["kb_id"]},
+                "output": {"duration": sub_result.get("duration", 0), "cited_nodes": len(sub_result.get("cited_nodes", []))},
+                "framework": "multi-agent-supervisor",
+            }
+        )
+        for call in sub_result.get("tool_calls", []):
+            tool_calls.append({**call, "delegated_agent_id": collaborator["agent_id"]})
+
+    evidence = "\n\n".join(
+        f"[{item['agent_name']} / {item['kb_name']}]\n{item['answer']}" for item in sub_results
+    )
+    if SILICONFLOW_API_KEY:
+        try:
+            answer = call_general_model(
+                [
+                    {
+                        "role": "system",
+                        "content": "你是多智能体 Supervisor。只能综合各专业智能体提供的结果，保留知识库边界，不得补充外部事实。",
+                    },
+                    *history,
+                    {"role": "user", "content": f"问题：{question}\n\n各智能体结果：\n{evidence}"},
+                ]
+            )
+            tool_calls.append(
+                {"tool": "synthesize_agent_answers", "input": {"agents": len(sub_results)}, "output": {"status": "ok"}, "framework": "multi-agent-supervisor"}
+            )
+        except Exception as exc:
+            answer = "\n\n".join(f"### {item['agent_name']}（{item['kb_name']}）\n{item['answer']}" for item in sub_results)
+            tool_calls.append(
+                {"tool": "synthesize_agent_answers", "input": {"agents": len(sub_results)}, "output": {"fallback": str(exc)}, "framework": "multi-agent-supervisor"}
+            )
+    else:
+        answer = "\n\n".join(f"### {item['agent_name']}（{item['kb_name']}）\n{item['answer']}" for item in sub_results)
+
+    unique_cited = unique_nodes(all_nodes, 24)
+    unique_sources = list({str(item.get("url", index)): item for index, item in enumerate(all_sources)}.values())
+    return {
+        "answer": answer,
+        "cited_nodes": unique_cited,
+        "tool_calls": tool_calls,
+        "duration": round(time.perf_counter() - started, 2),
+        "history_turns": len(history),
+        "agent": "multi-agent-supervisor",
+        "agent_id": "supervisor_multi_agent",
+        "agent_name": "多智能体协同 Supervisor",
+        "kb_id": None,
+        "kb_name": " + ".join(item["kb_name"] for item in plan["collaborators"]),
+        "route_reason": plan["route_reason"],
+        "answer_mode": "multi_agent",
+        "sources": unique_sources,
+        "cross_kb": True,
+        "collaborating_agents": [{**item, "duration": metric["duration"]} for item, metric in zip(plan["collaborators"], agent_metrics)],
+        "sub_answers": sub_results,
+        "agent_metrics": agent_metrics,
+        "conversation_id": conversation_id,
+        "memory_used": memory_recalled > 0,
+        "memory_turns": memory_recalled,
+    }
+
+
 def answer_question(
     question: str,
     history: list[dict[str, str]] | None = None,
     agent_id: str = "auto",
     kb_id: str | None = None,
+    conversation_id: str | None = None,
 ) -> dict[str, Any]:
     started = time.perf_counter()
-    normalized_history = normalize_chat_history(history)
     db = load_db()
+    normalized_history, memory_recalled = merge_agent_memory(db, conversation_id, history)
+    route_plan = resolve_route_plan(question, normalized_history, agent_id, kb_id, db)
+    if route_plan["cross_kb"]:
+        return collaborative_answer(question, normalized_history, route_plan, conversation_id, memory_recalled)
     knowledge_bases = {item["kb_id"]: item for item in db["knowledge_bases"]}
     selected_agent, selected_kb_id, route_reason = select_agent_route(
         question, normalized_history, agent_id, kb_id, db
@@ -2420,7 +2727,24 @@ def answer_question(
     }
 
     def with_route(payload: dict[str, Any]) -> dict[str, Any]:
-        return {**payload, **route_metadata}
+        return {
+            **payload,
+            **route_metadata,
+            "cross_kb": False,
+            "collaborating_agents": [],
+            "agent_metrics": [
+                {
+                    "agent_id": selected_agent["agent_id"],
+                    "agent_name": selected_agent["name"],
+                    "kb_id": selected_kb_id,
+                    "kb_name": selected_kb.get("name") if selected_kb else None,
+                    "duration": float(payload.get("duration") or 0),
+                }
+            ],
+            "conversation_id": conversation_id,
+            "memory_used": memory_recalled > 0,
+            "memory_turns": memory_recalled,
+        }
 
     if selected_mode == "knowledge_graph":
         required_tools = {"resolve_graph_entities", "get_graph_neighbors"}
@@ -2590,21 +2914,22 @@ def answer_question(
 @app.post(f"{API_PREFIX}/routing/test")
 def test_route(payload: RouteTestPayload):
     db = load_db()
-    selected_agent, selected_kb_id, reason = select_agent_route(
-        payload.question.strip(), [], payload.agent_id, payload.kb_id, db
-    )
-    kb = get_item(db, "knowledge_bases", "kb_id", selected_kb_id) if selected_kb_id else None
+    plan = resolve_route_plan(payload.question.strip(), [], payload.agent_id, payload.kb_id, db)
+    primary = plan["collaborators"][0]
+    selected_agent = get_item(db, "agents", "agent_id", primary["agent_id"])
     return ok(
         {
             "question": payload.question.strip(),
-            "agent_id": selected_agent["agent_id"],
-            "agent_name": selected_agent["name"],
-            "kb_id": selected_kb_id,
-            "kb_name": kb.get("name") if kb else None,
-            "mode": selected_agent.get("mode"),
-            "tools": selected_agent.get("tools", []),
-            "allow_web_search": bool(selected_agent.get("allow_web_search")),
-            "route_reason": reason,
+            "agent_id": "supervisor_multi_agent" if plan["cross_kb"] else primary["agent_id"],
+            "agent_name": "多智能体协同 Supervisor" if plan["cross_kb"] else primary["agent_name"],
+            "kb_id": None if plan["cross_kb"] else primary["kb_id"],
+            "kb_name": " + ".join(item["kb_name"] for item in plan["collaborators"]) if plan["cross_kb"] else primary["kb_name"],
+            "mode": "multi_agent" if plan["cross_kb"] else selected_agent.get("mode"),
+            "tools": [] if plan["cross_kb"] else selected_agent.get("tools", []),
+            "allow_web_search": False if plan["cross_kb"] else bool(selected_agent.get("allow_web_search")),
+            "cross_kb": plan["cross_kb"],
+            "collaborators": plan["collaborators"],
+            "route_reason": plan["route_reason"],
         }
     )
 
@@ -2614,17 +2939,32 @@ def query(payload: QueryPayload):
     if not payload.question.strip():
         raise api_error(1001, "Question is required")
     history = normalize_chat_history(payload.history)
+    conversation_id = payload.conversation_id or new_id("conv")
     record = {
         "query_id": new_id("qry"),
         "question": payload.question.strip(),
-        **answer_question(payload.question.strip(), history, payload.agent_id, payload.kb_id),
+        **answer_question(payload.question.strip(), history, payload.agent_id, payload.kb_id, conversation_id),
+        "conversation_id": conversation_id,
         "created_at": now_iso(),
     }
 
     def mutator(db):
         db["queries"].insert(0, record)
+        update_conversation_memories(db, conversation_id, payload.question.strip(), record)
     mutate_db(mutator)
     return ok(record)
+
+
+@app.post(f"{API_PREFIX}/query/{{query_id}}/feedback")
+def query_feedback(query_id: str, payload: QueryFeedbackPayload):
+    def mutator(db):
+        item = get_item(db, "queries", "query_id", query_id)
+        if not item:
+            raise api_error(1001, "Query not found", 404)
+        item["feedback_accurate"] = payload.accurate
+        item["feedback_at"] = now_iso()
+        return {"query_id": query_id, "accurate": payload.accurate}
+    return ok(mutate_db(mutator), "feedback saved")
 
 
 @app.post(f"{API_PREFIX}/query/batch")
@@ -2634,11 +2974,19 @@ def query_batch(payload: BatchPayload):
     batch_id = new_id("batch")
     results = []
     for question in payload.questions[:20]:
-        results.append({"question": question, **answer_question(question, agent_id=payload.agent_id, kb_id=payload.kb_id)})
+        results.append(
+            {
+                "query_id": new_id("qry"),
+                "question": question,
+                **answer_question(question, agent_id=payload.agent_id, kb_id=payload.kb_id),
+                "created_at": now_iso(),
+            }
+        )
     batch = {"batch_id": batch_id, "status": "done", "results": results, "created_at": now_iso()}
 
     def mutator(db):
         db["batches"].insert(0, batch)
+        db["queries"] = [*reversed(results), *db["queries"]]
     mutate_db(mutator)
     return ok(batch)
 
@@ -2653,11 +3001,27 @@ def query_batch_status(batch_id: str):
 
 
 @app.get(f"{API_PREFIX}/query/history")
-def query_history(page: int = 1, page_size: int = 20):
+def query_history(page: int = 1, page_size: int = 20, conversation_id: str | None = None):
     db = load_db()
-    items = db["queries"]
+    items = [item for item in db["queries"] if not conversation_id or item.get("conversation_id") == conversation_id]
     start = max(0, (page - 1) * page_size)
     return ok({"items": items[start : start + page_size], "total": len(items), "page": page, "page_size": page_size})
+
+
+@app.get(f"{API_PREFIX}/conversations/{{conversation_id}}/memory")
+def get_conversation_memory(conversation_id: str):
+    db = load_db()
+    items = [item for item in db["conversation_memories"] if item.get("conversation_id") == conversation_id]
+    return ok({"conversation_id": conversation_id, "items": items, "total": len(items)})
+
+
+@app.delete(f"{API_PREFIX}/conversations/{{conversation_id}}/memory")
+def clear_conversation_memory(conversation_id: str):
+    def mutator(db):
+        before = len(db["conversation_memories"])
+        db["conversation_memories"] = [item for item in db["conversation_memories"] if item.get("conversation_id") != conversation_id]
+        return {"conversation_id": conversation_id, "deleted": before - len(db["conversation_memories"])}
+    return ok(mutate_db(mutator), "conversation memory cleared")
 
 
 def initialize_store_schema() -> None:

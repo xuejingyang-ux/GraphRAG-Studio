@@ -644,6 +644,35 @@
   color: var(--cyan);
 }
 
+.collaboration-trace {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid rgba(188, 140, 255, 0.35);
+  border-radius: var(--r-md);
+  background: rgba(137, 87, 229, 0.08);
+}
+
+.memory-active {
+  color: var(--green);
+  border-color: rgba(63, 185, 80, 0.4);
+}
+
+.answer-feedback {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-muted);
+}
+
+.answer-feedback .btn.selected {
+  color: #071018;
+  border-color: var(--cyan);
+  background: var(--cyan);
+}
+
 .supervisor-card {
   display: flex;
   align-items: center;
@@ -720,6 +749,32 @@
   border-bottom: 1px solid var(--border-muted);
   color: var(--text-3);
   font-size: 12px;
+}
+
+.usage-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.usage-stats > div {
+  display: grid;
+  gap: 3px;
+  padding: 9px;
+  border: 1px solid var(--border-muted);
+  border-radius: var(--r-md);
+  text-align: center;
+  background: rgba(0, 245, 255, 0.035);
+}
+
+.usage-stats strong {
+  color: var(--cyan);
+  font-size: 18px;
+}
+
+.usage-stats span {
+  color: var(--text-3);
+  font-size: 10px;
 }
 
 .agent-card > .btn {

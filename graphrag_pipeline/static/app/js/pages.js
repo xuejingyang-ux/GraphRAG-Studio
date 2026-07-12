@@ -27,9 +27,10 @@ async function loadDocuments(pageSize = 50, kbId = "") {
 }
 
 async function loadAgentCatalog() {
-  const [knowledgeBases, agents] = await Promise.all([api.listKnowledgeBases(), api.listAgents()]);
+  const [knowledgeBases, agents, stats] = await Promise.all([api.listKnowledgeBases(), api.listAgents(), api.getAgentStats()]);
   AppState.knowledgeBases = knowledgeBases.items;
-  AppState.agents = agents.items;
+  const statsByAgent = Object.fromEntries(stats.items.map((item) => [item.agent_id, item]));
+  AppState.agents = agents.items.map((item) => ({ ...item, usage: statsByAgent[item.agent_id] || item.usage }));
   AppState.agentTools = agents.available_tools || [];
   return { knowledgeBases: AppState.knowledgeBases, agents: AppState.agents };
 }
@@ -564,17 +565,16 @@ async function showNodeDetail(nodeId, kbId = "") {
 
 async function renderChat(params = {}) {
   main().className = "main";
-  AppState.conversation = [];
   try {
     await loadAgentCatalog();
   } catch (error) {
     AppState.agents = [];
   }
-  main().innerHTML = pageHead("智能问答", "混合问答：知识图谱走 ReAct，实时问题联网检索，其他问题由通用大模型回答。", '<a class="btn btn-secondary" href="#/agents">✦ 智能体管理</a>') + `
+  main().innerHTML = pageHead("智能问答", "Supervisor 自动判断单智能体、跨知识库协同、联网或通用问答，并保留对话级智能体记忆。", '<button class="btn btn-secondary" id="new-conversation">＋ 新对话</button><a class="btn btn-secondary" href="#/agents">✦ 智能体管理</a>') + `
     <section class="chat-layout">
-      <aside class="card chat-history"><h2>历史记录</h2><div id="history-list"></div></aside>
+      <aside class="card chat-history"><div class="toolbar"><h2 style="margin-right:auto">历史记录</h2><button class="btn btn-sm btn-ghost" id="clear-agent-memory">清除记忆</button></div><p class="small" id="agent-memory-summary">正在读取对话记忆…</p><div id="history-list"></div></aside>
       <section class="chat-area">
-        <div class="toolbar agent-selector"><label for="chat-agent"><strong>智能体</strong></label><select class="select" id="chat-agent" style="max-width:300px"><option value="auto">自动选择（Supervisor）</option>${AppState.agents.map((item) => `<option value="${item.agent_id}">${escapeHtml(item.name)}${item.kb_name ? ` · ${escapeHtml(item.kb_name)}` : ""}</option>`).join("")}</select><span class="small" id="agent-description">根据问题自动选择知识库、联网或通用智能体</span></div>
+        <div class="toolbar agent-selector"><label for="chat-agent"><strong>智能体</strong></label><select class="select" id="chat-agent" style="max-width:300px"><option value="auto">自动选择（Supervisor）</option>${AppState.agents.map((item) => `<option value="${item.agent_id}">${escapeHtml(item.name)}${item.kb_name ? ` · ${escapeHtml(item.kb_name)}` : ""}</option>`).join("")}</select><span class="small" id="agent-description">根据问题自动选择单智能体或跨知识库协同</span><span class="badge memory-session" id="memory-session">记忆 ${escapeHtml(AppState.conversationId.slice(-8))}</span></div>
         <div class="messages" id="messages"></div>
         <div class="tag-row" id="suggested-prompts"></div>
         <div class="chat-input-row"><textarea class="textarea" id="chat-input" placeholder="询问当前知识图谱；批量模式下每行一个问题..."></textarea><button class="btn btn-secondary" id="batch-chat">批量</button><button class="btn btn-primary" id="send-chat">发送</button></div>
@@ -590,7 +590,7 @@ async function renderChat(params = {}) {
     $("#chat-agent").value = params.agent;
     $("#chat-agent").dispatchEvent(new Event("change"));
   }
-  $("#suggested-prompts").innerHTML = ["高血压有哪些常见症状和治疗方法？", "出现持续咳嗽和发热应该考虑哪些疾病？", "糖尿病常用哪些药物，应前往什么科室？", "哪些疾病通常建议到呼吸内科就诊？", "今天踢世界杯的球队名称"]
+  $("#suggested-prompts").innerHTML = ["高血压有哪些常见症状和治疗方法？", "比较高血压知识与 GraphRAG 的核心技术", "糖尿病常用哪些药物，应前往什么科室？", "哪些疾病通常建议到呼吸内科就诊？", "今天踢世界杯的球队名称"]
     .map((prompt) => `<button class="badge" data-prompt="${escapeHtml(prompt)}">${escapeHtml(prompt)}</button>`)
     .join("");
   $$("[data-prompt]").forEach((button) => button.addEventListener("click", () => ($("#chat-input").value = button.dataset.prompt)));
@@ -602,7 +602,27 @@ async function renderChat(params = {}) {
       sendChat();
     }
   });
+  $("#new-conversation").addEventListener("click", () => {
+    AppState.conversationId = createConversationId();
+    AppState.conversation = [];
+    $("#messages").innerHTML = "";
+    $("#memory-session").textContent = `记忆 ${AppState.conversationId.slice(-8)}`;
+    toast("已创建新对话，智能体记忆从空白开始", "success");
+    refreshMemoryStatus();
+  });
+  $("#clear-agent-memory").addEventListener("click", async () => {
+    if (!await confirmModal("清除当前对话记忆？", "这会删除各智能体为当前对话保存的历史，但不会删除问答记录。", "清除", true)) return;
+    try {
+      await api.clearConversationMemory(AppState.conversationId);
+      AppState.conversation = [];
+      await refreshMemoryStatus();
+      toast("当前对话的智能体记忆已清除", "success");
+    } catch (error) {
+      showError(error, "清除对话记忆失败");
+    }
+  });
   await refreshHistory();
+  await refreshMemoryStatus();
   if (params.q) $("#chat-input").focus();
 }
 
@@ -616,6 +636,9 @@ async function refreshHistory() {
     $$("[data-history]").forEach((item) => item.addEventListener("click", () => {
       const record = AppState.chatHistory.find((entry) => entry.query_id === item.dataset.history);
       if (record) {
+        AppState.conversationId = record.conversation_id || createConversationId();
+        $("#memory-session").textContent = `记忆 ${AppState.conversationId.slice(-8)}`;
+        refreshMemoryStatus();
         AppState.conversation = [
           { role: "user", content: String(record.question || "") },
           { role: "assistant", content: String(record.answer || "") },
@@ -627,6 +650,18 @@ async function refreshHistory() {
     }));
   } catch (error) {
     showError(error, "历史加载失败");
+  }
+}
+
+async function refreshMemoryStatus() {
+  const root = $("#agent-memory-summary");
+  if (!root) return;
+  try {
+    const memory = await api.getConversationMemory(AppState.conversationId);
+    const turns = memory.items.reduce((total, item) => total + Number(item.turns?.length || 0), 0);
+    root.textContent = memory.total ? `${memory.total} 个智能体记忆 · ${turns} 条消息` : "当前对话尚无智能体记忆";
+  } catch (error) {
+    root.textContent = "对话记忆暂不可用";
   }
 }
 
@@ -653,7 +688,7 @@ async function sendChat() {
   const thinking = appendMessage("ai", '<span class="thinking"><span></span><span></span><span></span></span>');
   try {
     const history = AppState.conversation.slice(-10);
-    const result = await api.query(question, history, $("#chat-agent")?.value || "auto");
+    const result = await api.query(question, history, $("#chat-agent")?.value || "auto", null, AppState.conversationId);
     thinking.remove();
     renderAnswer(result);
     AppState.conversation.push(
@@ -661,6 +696,7 @@ async function sendChat() {
       { role: "assistant", content: String(result.answer || "") },
     );
     await refreshHistory();
+    await refreshMemoryStatus();
     await refreshShellStats();
   } catch (error) {
     thinking.remove();
@@ -700,24 +736,40 @@ function renderAnswer(result, clear = false) {
   const tools = result.tool_calls || [];
   const cited = result.cited_nodes || [];
   const sources = result.sources || [];
+  const collaborators = result.collaborating_agents || [];
   const modeLabels = {
     knowledge_graph: "知识图谱",
     web_search: "联网检索",
     general_llm: "通用大模型",
+    multi_agent: "多智能体协同",
   };
   node.innerHTML += `
     <div class="tag-row answer-meta">
       <span class="badge">模式：${escapeHtml(modeLabels[result.answer_mode] || result.answer_mode || "历史记录")}</span>
       ${result.agent_name ? `<span class="badge">智能体：${escapeHtml(result.agent_name)}</span>` : ""}
       ${result.kb_name ? `<span class="badge">知识库：${escapeHtml(result.kb_name)}</span>` : ""}
+      ${result.memory_used ? `<span class="badge memory-active">已调用对话记忆 · ${Number(result.memory_turns || 0)} 条</span>` : ""}
     </div>
     ${result.route_reason ? `<p class="small route-reason">路由原因：${escapeHtml(result.route_reason)}</p>` : ""}
+    ${collaborators.length ? `<div class="collaboration-trace"><strong>协同智能体</strong><div class="tag-row">${collaborators.map((item) => `<span class="badge">${escapeHtml(item.agent_name)} · ${escapeHtml(item.kb_name)} · ${Number(item.duration || 0)}s</span>`).join("")}</div></div>` : ""}
     <details class="tool-call"><summary>Tool Calls (${tools.length} steps)</summary><pre>${escapeHtml(JSON.stringify(tools, null, 2))}</pre></details>
-    <div class="tag-row">${cited.map((item) => `<a class="badge type-${item.type}" href="#/graph?node=${encodeURIComponent(item.node_id)}">◉ ${escapeHtml(item.name)}</a>`).join("")}</div>
+    <div class="tag-row">${cited.map((item) => `<a class="badge type-${item.type}" href="#/graph?${item.kb_id && item.kb_id !== "__global__" ? `kb_id=${encodeURIComponent(item.kb_id)}&` : ""}node=${encodeURIComponent(item.node_id)}">◉ ${escapeHtml(item.name)}</a>`).join("")}</div>
     ${sources.length ? `<div class="answer-sources"><strong>信息来源</strong><ol>${sources.map((item) => `<li><a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.title)}</a><div class="small">${escapeHtml(item.snippet || "")}</div></li>`).join("")}</ol></div>` : ""}
     <p class="small">⏱ ${result.duration || 0}s</p>
     ${result.agent ? `<p class="small">Agent: ${escapeHtml(result.agent)} · history ${Number(result.history_turns || 0)} turns</p>` : ""}
+    ${result.query_id ? `<div class="answer-feedback" data-feedback-root="${escapeHtml(result.query_id)}"><span class="small">这条回答准确吗？</span><button class="btn btn-sm btn-secondary ${result.feedback_accurate === true ? "selected" : ""}" data-query-feedback="true">有帮助</button><button class="btn btn-sm btn-secondary ${result.feedback_accurate === false ? "selected" : ""}" data-query-feedback="false">不准确</button><span class="small feedback-status"></span></div>` : ""}
   `;
+  node.querySelectorAll("[data-query-feedback]").forEach((button) => button.addEventListener("click", async () => {
+    const root = button.closest("[data-feedback-root]");
+    const accurate = button.dataset.queryFeedback === "true";
+    try {
+      await api.submitQueryFeedback(root.dataset.feedbackRoot, accurate);
+      root.querySelectorAll("[data-query-feedback]").forEach((item) => item.classList.toggle("selected", item === button));
+      root.querySelector(".feedback-status").textContent = "反馈已记录";
+    } catch (error) {
+      showError(error, "提交反馈失败");
+    }
+  }));
 }
 
 async function renderAgents() {
@@ -730,9 +782,9 @@ async function renderAgents() {
   }
   const modeLabels = { knowledge_graph: "知识图谱 ReAct", web_search: "实时联网检索", general_llm: "通用大模型" };
   const icons = { agent_medical: "⚕", agent_technical: "◇", agent_web: "◎", agent_general: "✦" };
-  main().innerHTML = pageHead("智能体管理", "修改系统提示词、工具、知识库绑定和联网权限。", '<button class="btn btn-primary" id="create-agent">＋ 新建智能体</button><a class="btn btn-secondary" href="#/chat?agent=auto">Supervisor 自动选择</a>') + `
+  main().innerHTML = pageHead("智能体管理", "配置智能体并查看调用次数、用户反馈准确率和平均延迟。", '<button class="btn btn-primary" id="create-agent">＋ 新建智能体</button><a class="btn btn-secondary" href="#/chat?agent=auto">Supervisor 自动选择</a>') + `
     <section class="card supervisor-card glow">
-      <div><span class="eyebrow">SUPERVISOR</span><h2>自动路由智能体</h2><p class="small">先匹配知识库实体，再判断实时意图；没有命中时使用通用智能体。</p></div>
+      <div><span class="eyebrow">SUPERVISOR</span><h2>自动路由与多智能体协同</h2><p class="small">命中多个知识库时委派多个专业智能体并综合结果；否则选择单个知识库、联网或通用智能体。</p></div>
       <a class="btn btn-primary" href="#/chat?agent=auto">使用自动路由</a>
     </section>
     <section class="card glow route-test-panel">
@@ -750,6 +802,7 @@ async function renderAgents() {
           <div class="agent-tools"><strong>可用工具</strong><div class="tag-row">${(agent.tools || []).map((tool) => `<span class="badge">${escapeHtml(tool)}</span>`).join("")}</div></div>
           <div class="prompt-preview"><strong>系统提示词</strong><p class="small">${escapeHtml(agent.system_prompt || "未配置")}</p></div>
           <div class="agent-stats"><span>${Number(agent.documents || 0)} 文档</span><span>${Number(agent.nodes || 0)} 节点</span><span>${Number(agent.edges || 0)} 关系</span></div>
+          <div class="usage-stats" data-agent-usage="${agent.agent_id}"><div><strong>${Number(agent.usage?.call_count || 0)}</strong><span>调用次数</span></div><div><strong>${agent.usage?.accuracy == null ? "—" : `${Number(agent.usage.accuracy)}%`}</strong><span>${agent.usage?.accuracy == null ? "暂无评价" : `准确率 · ${Number(agent.usage.rated_count || 0)} 评`}</span></div><div><strong>${Number(agent.usage?.average_latency || 0)}s</strong><span>平均延迟</span></div></div>
           <div class="toolbar management-actions"><a class="btn btn-primary" data-use-agent="${agent.agent_id}" href="#/chat?agent=${encodeURIComponent(agent.agent_id)}">选择该智能体</a><button class="btn btn-secondary" data-edit-agent="${agent.agent_id}">配置</button>${agent.built_in ? '<span class="badge">内置</span>' : `<button class="btn btn-danger" data-delete-agent="${agent.agent_id}">删除</button>`}</div>
         </article>
       `).join("")}
@@ -779,7 +832,7 @@ async function renderAgents() {
     resultRoot.textContent = "正在判断路由…";
     try {
       const result = await api.testRoute($("#route-test-question").value, "auto", $("#route-test-kb").value || null);
-      resultRoot.innerHTML = `<span class="badge">${escapeHtml(result.agent_name)}</span> ${result.kb_name ? `<span class="badge">${escapeHtml(result.kb_name)}</span>` : ""}<span class="badge">${escapeHtml(modeLabels[result.mode] || result.mode)}</span><p class="small">${escapeHtml(result.route_reason)}</p>`;
+      resultRoot.innerHTML = `<span class="badge">${escapeHtml(result.agent_name)}</span> ${result.kb_name ? `<span class="badge">${escapeHtml(result.kb_name)}</span>` : ""}<span class="badge">${escapeHtml(modeLabels[result.mode] || (result.mode === "multi_agent" ? "多智能体协同" : result.mode))}</span>${result.collaborators?.length > 1 ? `<div class="tag-row">${result.collaborators.map((item) => `<span class="badge">${escapeHtml(item.agent_name)} → ${escapeHtml(item.kb_name)}</span>`).join("")}</div>` : ""}<p class="small">${escapeHtml(result.route_reason)}</p>`;
     } catch (error) {
       showError(error, "路由测试失败");
       resultRoot.textContent = error.message;
@@ -962,7 +1015,7 @@ async function renderSystem() {
     const [health, formats] = await Promise.all([api.health(), api.formats()]);
     $("#system-health").innerHTML = Object.entries(health.services).map(([name, service]) => `<p>${escapeHtml(name)} ${service.ok ? statusBadge("indexed") : statusBadge("failed")} <span class="small">${escapeHtml(service.detail)}</span></p>`).join("");
     $("#formats").innerHTML = `<div class="tag-row">${formats.formats.map((item) => `<span class="badge">${escapeHtml(item.ext)}</span>`).join("")}</div><p class="small">Max ${formats.max_size_mb}MB per file</p>`;
-    const endpoints = ["knowledge-bases", "agents", "documents/upload", "documents/{id}", "documents", "index/start", "index/status/{id}", "index/result/{id}", "index/jobs/{id}", "kg/nodes", "kg/edges", "kg/nodes/{id}", "kg/nodes/{id}/neighbors", "kg/stats", "kg/export", "query", "query/batch", "query/batch/{id}", "query/history", "search/entities", "search/path", "search/graph", "health", "system/stats", "system/formats", "system/demo"];
+    const endpoints = ["knowledge-bases", "agents", "agent-stats", "routing/test", "documents/upload", "documents/{id}", "documents", "index/start", "index/status/{id}", "index/result/{id}", "index/jobs/{id}", "kg/nodes", "kg/edges", "kg/nodes/{id}", "kg/nodes/{id}/neighbors", "kg/stats", "kg/export", "query", "query/{id}/feedback", "query/batch", "query/batch/{id}", "query/history", "conversations/{id}/memory", "search/entities", "search/path", "search/graph", "health", "system/stats", "system/formats", "system/demo"];
     $("#api-coverage").innerHTML = `<div class="tag-row">${endpoints.map((item) => `<span class="badge indexed">✓ ${escapeHtml(item)}</span>`).join("")}</div>`;
   } catch (error) {
     showError(error, "系统信息加载失败");

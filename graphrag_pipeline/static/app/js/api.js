@@ -95,8 +95,8 @@ const api = {
   exportKg(kbId = "") {
     return apiRequest(`/kg/export${kbId ? `?kb_id=${encodeURIComponent(kbId)}` : ""}`);
   },
-  query(question, history = [], agentId = "auto", kbId = null) {
-    return apiRequest("/query", { method: "POST", body: JSON.stringify({ question, history, agent_id: agentId, kb_id: kbId }) });
+  query(question, history = [], agentId = "auto", kbId = null, conversationId = null) {
+    return apiRequest("/query", { method: "POST", body: JSON.stringify({ question, history, agent_id: agentId, kb_id: kbId, conversation_id: conversationId }) });
   },
   queryBatch(questions, agentId = "auto", kbId = null) {
     return apiRequest("/query/batch", { method: "POST", body: JSON.stringify({ questions, agent_id: agentId, kb_id: kbId }) });
@@ -106,7 +106,17 @@ const api = {
   },
   getQueryHistory(params = {}) {
     const query = new URLSearchParams({ page: params.page || 1, page_size: params.page_size || 20 });
+    if (params.conversation_id) query.set("conversation_id", params.conversation_id);
     return apiRequest(`/query/history?${query}`);
+  },
+  submitQueryFeedback(queryId, accurate) {
+    return apiRequest(`/query/${encodeURIComponent(queryId)}/feedback`, { method: "POST", body: JSON.stringify({ accurate }) });
+  },
+  getConversationMemory(conversationId) {
+    return apiRequest(`/conversations/${encodeURIComponent(conversationId)}/memory`);
+  },
+  clearConversationMemory(conversationId) {
+    return apiRequest(`/conversations/${encodeURIComponent(conversationId)}/memory`, { method: "DELETE" });
   },
   searchEntities(q, type = "", kbId = "") {
     const query = new URLSearchParams({ q });
@@ -152,6 +162,9 @@ const api = {
   },
   listAgents() {
     return apiRequest("/agents");
+  },
+  getAgentStats() {
+    return apiRequest("/agent-stats");
   },
   getAgent(agentId) {
     return apiRequest(`/agents/${encodeURIComponent(agentId)}`);

@@ -1,3 +1,8 @@
+function createConversationId() {
+  const random = globalThis.crypto?.randomUUID?.() || Math.random().toString(36).slice(2);
+  return `conv_${random.replaceAll("-", "").slice(0, 16)}`;
+}
+
 const AppState = {
   currentPage: "dashboard",
   kg: {
@@ -10,6 +15,7 @@ const AppState = {
   activeJobs: {},
   chatHistory: [],
   conversation: [],
+  conversationId: createConversationId(),
   knowledgeBases: [],
   agents: [],
   agentTools: [],

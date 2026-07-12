@@ -30,8 +30,9 @@
 | GET | `/agents` | 获取内置/自定义智能体、可选工具、绑定知识库及数据统计 |
 | POST/PATCH/DELETE | `/agents[/{agent_id}]` | 创建、修改和删除自定义智能体；内置智能体可配置但不可删除 |
 | POST | `/routing/test` | 只执行 Supervisor 路由判断，不调用大模型或联网服务 |
+| GET | `/agent-stats` | 按智能体统计调用次数、用户反馈准确率和平均延迟 |
 
-内置 `agent_medical`、`agent_technical`、`agent_web`、`agent_general`。每个智能体保存 `system_prompt`、`tools` 和 `allow_web_search`，配置直接参与执行权限判断和模型系统消息。`POST /query` 接受 `agent_id`（默认 `auto`）和可选 `kb_id`。手动模式严格使用智能体绑定的知识库；自动模式根据命中实体所属知识库、实时意图或通用回退进行路由。
+内置 `agent_medical`、`agent_technical`、`agent_web`、`agent_general`。每个智能体保存 `system_prompt`、`tools` 和 `allow_web_search`。`POST /query` 接受 `agent_id`、`kb_id` 和 `conversation_id`。自动模式会先计算路由计划：命中至少两个知识库时由 Supervisor 委派多个知识图谱智能体并综合结果，否则进入单智能体、联网或通用路径。智能体调用统计由查询日志中的 `agent_metrics` 聚合；准确率只统计已提交反馈的答案。
 
 ## 索引任务
 
@@ -57,7 +58,7 @@
 
 ## QA 问答
 
-`POST /query` 会接收最多 10 条规范化历史消息，并采用混合路由：命中图谱实体时使用 **LangChain Tool Binding + ReAct 循环**；包含“今天、最新、赛程、天气”等实时意图时，通过固定搜索端点获取当前网页摘要，再由模型仅依据摘要回答；其余未命中图谱的问题交给通用大模型。没有 API Key、框架不可用或模型调用失败时提供明确回退。接口通过 `answer_mode`、`agent`、`sources` 和 `history_turns` 返回执行模式、网页来源及历史轮数，`tool_calls` 只记录动作与工具观察，不暴露模型内部思维链。
+`POST /query` 会合并最多 10 条前端历史与后端对话级智能体记忆，并采用混合路由。跨库响应使用 `answer_mode=multi_agent`，返回 `collaborating_agents`、`agent_metrics` 和委派工具轨迹；单库命中使用 LangChain/ReAct；实时问题联网检索；其他问题进入通用模型。没有 API Key 时保留确定性图谱回退。`tool_calls` 只记录动作与工具观察，不暴露模型内部思维链。
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
@@ -65,6 +66,8 @@
 | POST | `/query/batch` | 批量问答 |
 | GET | `/query/batch/{batch_id}` | 批量状态 |
 | GET | `/query/history` | 问答历史 |
+| POST | `/query/{query_id}/feedback` | 保存答案准确/不准确反馈，用于统计准确率 |
+| GET/DELETE | `/conversations/{conversation_id}/memory` | 查看或清除当前对话的分智能体记忆 |
 
 普通 API 的前端超时为 30 秒，`/query` 与 `/query/batch` 为 60 秒；超时统一转换为错误码 `4001`。
 
