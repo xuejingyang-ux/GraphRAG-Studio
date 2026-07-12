@@ -26,7 +26,7 @@
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/knowledge-bases` | 获取知识库及文档、节点、关系统计 |
-| GET | `/agents` | 获取四个内置智能体及绑定知识库 |
+| GET | `/agents` | 获取四个内置智能体、工具权限、绑定知识库及文档/节点/关系统计 |
 
 内置 `agent_medical`、`agent_technical`、`agent_web`、`agent_general`。`POST /query` 接受 `agent_id`（默认 `auto`）和可选 `kb_id`。手动模式严格使用智能体绑定的知识库；自动模式根据命中实体所属知识库、实时意图或通用回退进行路由。
 

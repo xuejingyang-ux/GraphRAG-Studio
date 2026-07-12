@@ -19,6 +19,7 @@ async function navigate() {
     documents: renderDocuments,
     graph: renderGraphPage,
     chat: renderChat,
+    agents: renderAgents,
     search: renderSearch,
     system: renderSystem,
   };

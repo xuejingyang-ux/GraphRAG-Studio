@@ -486,7 +486,7 @@ async function renderChat(params = {}) {
   } catch (error) {
     AppState.agents = [];
   }
-  main().innerHTML = pageHead("智能问答", "混合问答：知识图谱走 ReAct，实时问题联网检索，其他问题由通用大模型回答。") + `
+  main().innerHTML = pageHead("智能问答", "混合问答：知识图谱走 ReAct，实时问题联网检索，其他问题由通用大模型回答。", '<a class="btn btn-secondary" href="#/agents">✦ 智能体中心</a>') + `
     <section class="chat-layout">
       <aside class="card chat-history"><h2>历史记录</h2><div id="history-list"></div></aside>
       <section class="chat-area">
@@ -502,6 +502,10 @@ async function renderChat(params = {}) {
     const selected = AppState.agents.find((item) => item.agent_id === event.target.value);
     $("#agent-description").textContent = selected?.description || "根据问题自动选择知识库、联网或通用智能体";
   });
+  if (params.agent && AppState.agents.some((item) => item.agent_id === params.agent)) {
+    $("#chat-agent").value = params.agent;
+    $("#chat-agent").dispatchEvent(new Event("change"));
+  }
   $("#suggested-prompts").innerHTML = ["高血压有哪些常见症状和治疗方法？", "出现持续咳嗽和发热应该考虑哪些疾病？", "糖尿病常用哪些药物，应前往什么科室？", "哪些疾病通常建议到呼吸内科就诊？", "今天踢世界杯的球队名称"]
     .map((prompt) => `<button class="badge" data-prompt="${escapeHtml(prompt)}">${escapeHtml(prompt)}</button>`)
     .join("");
@@ -629,6 +633,37 @@ function renderAnswer(result, clear = false) {
     ${sources.length ? `<div class="answer-sources"><strong>信息来源</strong><ol>${sources.map((item) => `<li><a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.title)}</a><div class="small">${escapeHtml(item.snippet || "")}</div></li>`).join("")}</ol></div>` : ""}
     <p class="small">⏱ ${result.duration || 0}s</p>
     ${result.agent ? `<p class="small">Agent: ${escapeHtml(result.agent)} · history ${Number(result.history_turns || 0)} turns</p>` : ""}
+  `;
+}
+
+async function renderAgents() {
+  main().className = "main";
+  try {
+    await loadAgentCatalog();
+  } catch (error) {
+    main().innerHTML = pageHead("智能体中心", "查看并选择知识库智能体。") + emptyState("智能体加载失败", "请检查后端 API 状态后重试。");
+    return;
+  }
+  const modeLabels = { knowledge_graph: "知识图谱 ReAct", web_search: "实时联网检索", general_llm: "通用大模型" };
+  const icons = { agent_medical: "⚕", agent_technical: "◇", agent_web: "◎", agent_general: "✦" };
+  main().innerHTML = pageHead("智能体中心", "查看四个内置智能体的知识范围、工具权限和运行模式。", '<a class="btn btn-primary" href="#/chat?agent=auto">Supervisor 自动选择</a>') + `
+    <section class="card supervisor-card glow">
+      <div><span class="eyebrow">SUPERVISOR</span><h2>自动路由智能体</h2><p class="small">先匹配知识库实体，再判断实时意图；没有命中时使用通用智能体。</p></div>
+      <a class="btn btn-primary" href="#/chat?agent=auto">使用自动路由</a>
+    </section>
+    <section class="agent-grid">
+      ${AppState.agents.map((agent) => `
+        <article class="card agent-card glow" data-agent-card="${agent.agent_id}">
+          <div class="agent-card-head"><span class="agent-icon">${icons[agent.agent_id] || "✦"}</span><div><span class="eyebrow">${escapeHtml(agent.agent_id)}</span><h2>${escapeHtml(agent.name)}</h2></div></div>
+          <p>${escapeHtml(agent.description || "")}</p>
+          <div class="tag-row"><span class="badge">${escapeHtml(modeLabels[agent.mode] || agent.mode)}</span><span class="badge">${agent.allow_web_search ? "允许联网" : "禁止联网"}</span></div>
+          <div class="agent-scope"><strong>绑定知识库</strong><p>${escapeHtml(agent.kb_name || "不绑定知识库")}</p></div>
+          <div class="agent-tools"><strong>可用工具</strong><div class="tag-row">${(agent.tools || []).map((tool) => `<span class="badge">${escapeHtml(tool)}</span>`).join("")}</div></div>
+          <div class="agent-stats"><span>${Number(agent.documents || 0)} 文档</span><span>${Number(agent.nodes || 0)} 节点</span><span>${Number(agent.edges || 0)} 关系</span></div>
+          <a class="btn btn-primary" data-use-agent="${agent.agent_id}" href="#/chat?agent=${encodeURIComponent(agent.agent_id)}">选择该智能体</a>
+        </article>
+      `).join("")}
+    </section>
   `;
 }
 

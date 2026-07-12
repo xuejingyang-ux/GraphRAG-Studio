@@ -576,6 +576,59 @@
   color: var(--cyan);
 }
 
+.supervisor-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 16px;
+}
+
+.agent-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.agent-card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.agent-card-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.agent-icon {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  border: 1px solid rgba(0, 245, 255, 0.45);
+  border-radius: 14px;
+  color: var(--cyan);
+  font-size: 24px;
+  background: rgba(0, 245, 255, 0.08);
+}
+
+.agent-stats {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 0;
+  border-top: 1px solid var(--border-muted);
+  border-bottom: 1px solid var(--border-muted);
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+.agent-card > .btn {
+  margin-top: auto;
+}
+
 .tool-call summary {
   padding: 8px 10px;
   cursor: pointer;
@@ -673,5 +726,14 @@
 
   .chat-input-row {
     grid-template-columns: 1fr;
+  }
+
+  .agent-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .supervisor-card {
+    align-items: flex-start;
+    flex-direction: column;
   }
 }

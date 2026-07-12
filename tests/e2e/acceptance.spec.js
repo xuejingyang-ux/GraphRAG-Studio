@@ -65,6 +65,18 @@ test.describe.serial("GraphRAG Studio PRD browser acceptance", () => {
     await expect(answer).toContainText("用户手动选择");
   });
 
+  test("agent center lists four agents and opens chat with the chosen agent", async ({ page }) => {
+    await page.goto("/#/agents");
+    await expect(page.locator("[data-agent-card]")).toHaveCount(4);
+    const medical = page.locator('[data-agent-card="agent_medical"]');
+    await expect(medical).toContainText("医疗知识智能体");
+    await expect(medical).toContainText("医疗知识库");
+    await expect(medical).toContainText("resolve_graph_entities");
+    await medical.locator('[data-use-agent="agent_medical"]').click();
+    await expect(page).toHaveURL(/#\/chat\?agent=agent_medical/);
+    await expect(page.locator("#chat-agent")).toHaveValue("agent_medical");
+  });
+
   test("hybrid mode labels web answers and renders clickable sources", async ({ page }) => {
     await page.route("**/api/v1/query", async (route) => {
       await route.fulfill({

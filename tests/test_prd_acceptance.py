@@ -52,6 +52,11 @@ class PRDAcceptanceTests(unittest.TestCase):
             {item["agent_id"] for item in agents["items"]},
             {"agent_medical", "agent_technical", "agent_web", "agent_general"},
         )
+        by_id = {item["agent_id"]: item for item in agents["items"]}
+        self.assertIn("resolve_graph_entities", by_id["agent_medical"]["tools"])
+        self.assertEqual(by_id["agent_medical"]["kb_name"], "医疗知识库")
+        self.assertGreater(by_id["agent_medical"]["nodes"], 0)
+        self.assertIn("web_search", by_id["agent_web"]["tools"])
 
     def test_f02_index_progress_and_result(self) -> None:
         upload = self.client.post(

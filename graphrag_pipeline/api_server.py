@@ -42,7 +42,7 @@ for env_path in (PROJECT_DIR / ".env", PROJECT_DIR.parent / ".env"):
     if env_path.exists():
         load_dotenv(env_path)
 
-APP_VERSION = "v1.2.0"
+APP_VERSION = "v1.2.1"
 API_PREFIX = "/api/v1"
 MAX_UPLOAD_BYTES = 200 * 1024 * 1024
 SUPPORTED_FORMATS = {
@@ -87,10 +87,10 @@ def default_knowledge_bases() -> list[dict[str, Any]]:
 
 def default_agents() -> list[dict[str, Any]]:
     return [
-        {"agent_id": "agent_medical", "name": "医疗知识智能体", "description": "仅基于医疗知识库进行可追溯问答。", "kb_id": "kb_medical", "mode": "knowledge_graph", "allow_web_search": False},
-        {"agent_id": "agent_technical", "name": "GraphRAG 技术智能体", "description": "基于技术知识库回答 GraphRAG 与工程实现问题。", "kb_id": "kb_technical", "mode": "knowledge_graph", "allow_web_search": False},
-        {"agent_id": "agent_web", "name": "实时联网智能体", "description": "检索赛程、天气、新闻等实时信息并展示来源。", "kb_id": None, "mode": "web_search", "allow_web_search": True},
-        {"agent_id": "agent_general", "name": "通用问答智能体", "description": "处理未命中知识库且不需要实时检索的通用问题。", "kb_id": None, "mode": "general_llm", "allow_web_search": False},
+        {"agent_id": "agent_medical", "name": "医疗知识智能体", "description": "仅基于医疗知识库进行可追溯问答。", "kb_id": "kb_medical", "mode": "knowledge_graph", "allow_web_search": False, "tools": ["resolve_graph_entities", "get_graph_neighbors", "search_path"]},
+        {"agent_id": "agent_technical", "name": "GraphRAG 技术智能体", "description": "基于技术知识库回答 GraphRAG 与工程实现问题。", "kb_id": "kb_technical", "mode": "knowledge_graph", "allow_web_search": False, "tools": ["resolve_graph_entities", "get_graph_neighbors", "search_path"]},
+        {"agent_id": "agent_web", "name": "实时联网智能体", "description": "检索赛程、天气、新闻等实时信息并展示来源。", "kb_id": None, "mode": "web_search", "allow_web_search": True, "tools": ["web_search", "generate_web_answer"]},
+        {"agent_id": "agent_general", "name": "通用问答智能体", "description": "处理未命中知识库且不需要实时检索的通用问题。", "kb_id": None, "mode": "general_llm", "allow_web_search": False, "tools": ["generate_general_answer"]},
     ]
 
 
@@ -108,12 +108,28 @@ def ensure_db_schema(db: dict[str, Any]) -> bool:
         if table not in db:
             db[table] = []
             changed = True
-    if not db["knowledge_bases"]:
-        db["knowledge_bases"] = default_knowledge_bases()
-        changed = True
-    if not db["agents"]:
-        db["agents"] = default_agents()
-        changed = True
+    existing_kbs = {item.get("kb_id"): item for item in db["knowledge_bases"]}
+    for default in default_knowledge_bases():
+        current = existing_kbs.get(default["kb_id"])
+        if current is None:
+            db["knowledge_bases"].append(default)
+            changed = True
+        else:
+            for key, value in default.items():
+                if key not in current:
+                    current[key] = value
+                    changed = True
+    existing_agents = {item.get("agent_id"): item for item in db["agents"]}
+    for default in default_agents():
+        current = existing_agents.get(default["agent_id"])
+        if current is None:
+            db["agents"].append(default)
+            changed = True
+        else:
+            for key, value in default.items():
+                if key not in current:
+                    current[key] = value
+                    changed = True
     doc_kbs: dict[str, str] = {}
     for doc in db["documents"]:
         if not doc.get("kb_id"):
@@ -1193,7 +1209,18 @@ def list_knowledge_bases():
 def list_agents():
     db = load_db()
     kb_names = {item["kb_id"]: item["name"] for item in db["knowledge_bases"]}
-    items = [{**agent, "kb_name": kb_names.get(agent.get("kb_id"))} for agent in db["agents"]]
+    items = []
+    for agent in db["agents"]:
+        kb_id = agent.get("kb_id")
+        items.append(
+            {
+                **agent,
+                "kb_name": kb_names.get(kb_id),
+                "documents": len([doc for doc in db["documents"] if kb_id and doc.get("kb_id") == kb_id]),
+                "nodes": len([node for node in db["nodes"] if kb_id and node.get("kb_id") == kb_id and not node.get("is_hub")]),
+                "edges": len([edge for edge in db["edges"] if kb_id and edge.get("kb_id") == kb_id and not edge.get("is_hub_edge")]),
+            }
+        )
     return ok({"items": items, "total": len(items)})
 
 

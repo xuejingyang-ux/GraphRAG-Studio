@@ -1,6 +1,6 @@
 {
   "name": "graphrag-studio",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "private": true,
   "scripts": {
     "lint": "node scripts/lint-js.mjs && python -m py_compile graphrag_pipeline/api_server.py",
